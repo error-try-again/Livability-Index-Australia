@@ -4,37 +4,45 @@
 set -e
 
 setup_docker_rootless() {
-    echo "Setting up Docker in rootless mode..."
+  echo "Setting up Docker in rootless mode..."
 
-    if ! command -v dockerd-rootless-setuptool.sh &> /dev/null; then
-        dockerd-rootless-setuptool.sh install
-        echo "export PATH=/home/docker-primary/bin:$PATH" >> ~/.bashrc
-        echo "export DOCKER_HOST=unix:///run/user/$(id -u)/docker.sock" >> ~/.bashrc
-        echo "export XDG_RUNTIME_DIR=/run/user/$(id -u)" >> ~/.bashrc
-    else
-        echo "Docker rootless mode is already set up."
-    fi
+  if ! command -v dockerd-rootless-setuptool.sh &>/dev/null; then
+    dockerd-rootless-setuptool.sh install
+    echo "export PATH=/home/docker-primary/bin:$PATH" >>~/.bashrc
+    echo "export DOCKER_HOST=unix:///run/user/$(id -u)/docker.sock" >>~/.bashrc
+    echo "export XDG_RUNTIME_DIR=/run/user/$(id -u)" >>~/.bashrc
+  else
+    echo "Docker rootless mode is already set up."
+  fi
 }
 
 prompt_for_overwrite() {
-    echo "The 'graphql-server' directory already exists."
-    read -p "Do you want to overwrite it? (yes/no): " choice
+  echo "The 'graphql-server' directory already exists."
+  read -p "Do you want to overwrite it? (yes/no): " choice
 
-    shopt -s nocasematch
-    case "$choice" in
-        yes|y ) return 0 ;;
-        no|n ) return 1 ;;
-        * ) echo "Invalid choice. Exiting." ; exit 1 ;;
-    esac
+  shopt -s nocasematch
+  case "$choice" in
+  yes | y) return 0 ;;
+  no | n) return 1 ;;
+  *)
+    echo "Invalid choice. Exiting."
+    exit 1
+    ;;
+  esac
 }
 
 setup_server_files() {
-    echo "Initializing NPM project..."
-    npm init --yes && npm pkg set type="module"
-    echo "Installing dependencies..."
-    npm install --save-dev typescript @types/node @apollo/server mongodb graphql @types/graphql graphql-tag
+  echo "Initializing NPM project..."
+  npm init --yes && npm pkg set type="module"
+  echo "Installing dependencies..."
+  npm install --save-dev typescript @types/node @apollo/server mongodb graphql @types/graphql graphql-tag dotenv joi
 
-        cat > tsconfig.json <<- EOL
+  cat >.env <<-EOL
+MONGO_URI=mongodb://root:example@mongo:27017/weatherDB
+PORT=4000
+EOL
+
+  cat >tsconfig.json <<-EOL
 {
 "compilerOptions": {
     "rootDirs": ["src"],
@@ -49,7 +57,7 @@ setup_server_files() {
 }
 EOL
 
-        cat > package.json <<- EOL
+  cat >package.json <<-EOL
 {
 "type": "module",
 "scripts": {
@@ -68,18 +76,26 @@ EOL
 }
 EOL
 
-cat > src/index.ts <<- 'EOL'
+  cat >src/index.ts <<-'EOL'
+import 'dotenv/config';
 import gql from 'graphql-tag';
-
 import { startStandaloneServer } from '@apollo/server/standalone';
 import { ApolloServer } from '@apollo/server';
 import { MongoClient } from 'mongodb';
 
 const MONGO_URI = process.env.MONGO_URI || '';
+const PORT = parseInt(process.env.PORT, 10) || 4000;
 
 async function startServer() {
-    const client = new MongoClient(MONGO_URI);
-    await client.connect();
+    let client;
+
+    try {
+        client = new MongoClient(MONGO_URI);
+        await client.connect();
+    } catch (error) {
+        console.error('Failed to connect to MongoDB', error);
+        process.exit(1);
+    }
 
     const typeDefs = gql`
         type Weather {
@@ -127,16 +143,20 @@ async function startServer() {
         }
 
         type Query {
-            getWeatherByCity(city: String!, limit: Int, skip: Int): [Weather!]!
+            getWeatherByCity(city: String!, limit: Int, skip: Int, dt_iso: String): [Weather!]!
         }
 
     `;
 
     const resolvers = {
         Query: {
-            getWeatherByCity: async (_, { city, limit = 10, skip = 0, dt_iso}) => {
+            getWeatherByCity: async (_, { city, limit = 10, skip = 0, dt_iso }) => {
                 const db = client.db('weatherDB');
-                return await db.collection(city).find().limit(limit).skip(skip).toArray();
+                let filter: { [key: string]: any } = {};
+                if (dt_iso) {
+                    filter.dt_iso = dt_iso;
+                }
+                return await db.collection(city).find(filter).limit(limit).skip(skip).toArray();
             },
         },
     };
@@ -147,16 +167,23 @@ async function startServer() {
     });
 
     const { url } = await startStandaloneServer(server, {
-        listen: { port: 4000 },
+        listen: { port: PORT },
     });
 
     console.log(`Server ready at: ${url}`);
+
+    // Graceful shutdown
+    process.on('SIGTERM', async () => {
+        console.log('SIGTERM signal received. Shutting down gracefully...');
+        await client.close();
+        process.exit(0);
+    });
 }
 
 startServer();
 EOL
 
-        cat > Dockerfile <<- EOL
+  cat >Dockerfile <<-EOL
 FROM node:20.7.0
 
 WORKDIR /usr/app
@@ -175,10 +202,10 @@ EOL
 
 setup_city_data() {
 
-    mkdir -p cities .
-    cp -R ~/cities/* cities/
+  mkdir -p cities .
+  cp -R ~/cities/* cities/
 
-    cat > cities/city_names.json <<- EOL
+  cat >cities/city_names.json <<-EOL
 {
 "cities": [
     "Brisbane",
@@ -192,27 +219,25 @@ setup_city_data() {
 }
 EOL
 
-    # Define the MongoDB URI
-    MONGO_URI="mongodb://root:example@mongo:27017/weatherDB"
+  # Define the MongoDB URI
+  MONGO_URI="mongodb://root:example@mongo:27017/weatherDB"
 
-    cities=($(jq -r '.cities[]' cities/city_names.json ))
+  cities=($(jq -r '.cities[]' cities/city_names.json))
 
-    # Iterate over each city and import data
-    for city in "${cities[@]}"
-        do
-        echo "Attempting to import data for $city"
-        json_file="cities/${city}.json"
-        docker exec -i graphql-server-mongo-1 mongoimport --uri="$MONGO_URI"  --authenticationDatabase=admin --collection="$city" --file="$json_file" --jsonArray
-    done
+  # Iterate over each city and import data
+  for city in "${cities[@]}"; do
+    echo "Attempting to import data for $city"
+    json_file="cities/${city}.json"
+    docker exec -i graphql-server-mongo-1 mongoimport --uri="$MONGO_URI" --authenticationDatabase=admin --collection="$city" --file="$json_file" --jsonArray
+  done
 }
 
-
 setup_docker_environment() {
-    cat > docker-compose.yml <<- EOL
+  cat >docker-compose.yml <<-EOL
 version: '3.8'
 services:
   mongo:
-    image: mongodb/mongodb-community-server:latest
+    image: mongo:latest
     ports:
       - "27017:27017"
     volumes:
@@ -238,51 +263,67 @@ volumes:
   mongodb_data:
 EOL
 
-    echo "Building Docker image..."
-    docker build -t apollo . || { echo "Failed to build Docker image"; exit 1; }
+  echo "Building Docker image..."
+  docker build -t apollo . || {
+    echo "Failed to build Docker image"
+    exit 1
+  }
 
-    sleep 10;
+  sleep 10
 
-    echo "Running Docker Compose..."
-    docker compose up -d || { echo "Failed to run Docker Compose"; exit 1; }
+  echo "Running Docker Compose..."
+  docker compose up -d || {
+    echo "Failed to run Docker Compose"
+    exit 1
+  }
 
-    sleep 10;
+  sleep 10
 
-    echo "exit" | docker exec -i graphql-server-mongo-1 mongosh
+  echo "exit" | docker exec -i graphql-server-mongo-1 mongosh
 
-    sleep 10;
+  sleep 10
 
-    setup_city_data
+  setup_city_data
 
 }
 
 setup_apollo_and_deps() {
-    echo "Setting up Apollo GraphQL server and its dependencies..."
+  echo "Setting up Apollo GraphQL server and its dependencies..."
 
-    if [ -d "graphql-server" ] && ! prompt_for_overwrite; then
-        echo "Skipping 'graphql-server' setup."
-        return
-    fi
+  if [ -d "graphql-server" ] && ! prompt_for_overwrite; then
+    echo "Skipping 'graphql-server' setup."
+    return
+  fi
 
-    rm -rf graphql-server
+  rm -rf graphql-server
 
-    docker system prune -a
+  docker system prune -a
 
-#     docker rm -f $(docker ps -a -q)
+  containers=$(docker ps -aq)
 
-    mkdir -p graphql-server/src
-    cd graphql-server || { echo "Failed to change directory to graphql-server"; exit 1; }
+  if [ ! -z "$containers" ]; then
+    docker stop $containers
+    docker rm -f $(docker ps -a -q)
+  else
+    echo "No containers are running."
+  fi
 
-    setup_server_files
-    setup_docker_environment
+  mkdir -p graphql-server/src
+  cd graphql-server || {
+    echo "Failed to change directory to graphql-server"
+    exit 1
+  }
+
+  setup_server_files
+  setup_docker_environment
 
 }
 
 main() {
-    setup_docker_rootless
-    setup_apollo_and_deps
+  setup_docker_rootless
+  setup_apollo_and_deps
 
-    echo "Setup completed successfully."
+  echo "Setup completed successfully."
 }
 
 main
