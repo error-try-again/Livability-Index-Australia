@@ -39,5 +39,5 @@ The project has several aspects.
 - [ ] SSL termination 
 
 # References:
-[rootless-docker-security][https://docs.docker.com/engine/security/rootless/]
-[Apollo Docs][https://www.apollographql.com/docs/apollo-server/getting-started]
+[rootless-docker-security](https://docs.docker.com/engine/security/rootless/)
+[Apollo Docs](https://www.apollographql.com/docs/apollo-server/getting-started)
