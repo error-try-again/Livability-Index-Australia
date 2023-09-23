@@ -38,7 +38,7 @@ setup_server_files() {
   npm install --save-dev typescript @types/node @apollo/server mongodb graphql @types/graphql graphql-tag dotenv joi
 
   cat >.env <<-EOL
-MONGO_URI=mongodb://root:example@mongo:27017/weatherDB
+MONGO_URI=mongodb://root:example@mongo:27017/recordsDB
 PORT=4000
 EOL
 
@@ -81,23 +81,70 @@ import 'dotenv/config';
 import gql from 'graphql-tag';
 import { startStandaloneServer } from '@apollo/server/standalone';
 import { ApolloServer } from '@apollo/server';
-import { MongoClient } from 'mongodb';
+import { MongoClient, Db } from 'mongodb';
 
-const MONGO_URI = process.env.MONGO_URI || '';
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/recordsDB';
 const PORT = parseInt(process.env.PORT, 10) || 4000;
 
-async function startServer() {
-    let client;
 
-    try {
-        client = new MongoClient(MONGO_URI);
-        await client.connect();
-    } catch (error) {
-        console.error('Failed to connect to MongoDB', error);
-        process.exit(1);
+let client: MongoClient;
+let db: Db;
+
+const state = {
+  db: null,
+  mode: null
+};
+
+async function connectToDatabase(): Promise<Db> {
+    if (state.db) {
+        console.log('Already connected to MongoDB');
+        return state.db;
     }
 
-    const typeDefs = gql`
+    try {
+        client = await MongoClient.connect(MONGO_URI);
+        state.db = client.db();
+        state.mode = 'connected';
+        console.log('Connected to MongoDB');
+        return state.db;
+    } catch (error) {
+        console.error("Failed to connect to MongoDB:", error);
+        throw error;
+    }
+}
+
+
+function getDatabase() {
+    if (!state.db) {
+        throw new Error('Database is not initialized. Call connectToDatabase first.');
+    }
+    return state.db;
+}
+
+async function disconnectFromDatabase() {
+    if (client) {
+        await client.close();
+    }
+}
+
+async function createIndexes() {
+    const database = getDatabase();
+
+    // Fetch the list of collections
+    const collections = await database.listCollections().toArray();
+
+    for (const collectionInfo of collections) {
+        const collectionName = collectionInfo.name;
+        const collection = database.collection(collectionName);
+        await collection.createIndex({ dt_iso: 1 }); // 1 indicates ascending order
+        console.log(`Index created for collection: ${collectionName}`);
+    }
+    console.log('Indexes created successfully');
+}
+
+
+// GraphQL Typedefs
+export const weatherTypeDefs = gql`
         type Weather {
             dt: Int!
             dt_iso: String!
@@ -145,42 +192,57 @@ async function startServer() {
         type Query {
             getWeatherByCity(city: String!, limit: Int, skip: Int, dt_iso: String): [Weather!]!
         }
+`;
 
-    `;
-
-    const resolvers = {
-        Query: {
-            getWeatherByCity: async (_, { city, limit = 10, skip = 0, dt_iso }) => {
-                const db = client.db('weatherDB');
-                let filter: { [key: string]: any } = {};
-                if (dt_iso) {
-                    filter.dt_iso = dt_iso;
-                }
-                return await db.collection(city).find(filter).limit(limit).skip(skip).toArray();
-            },
+// GraphQL Resolvers
+const resolvers = {
+    Query: {
+        getWeatherByCity: async (_, { city, limit = 10, skip = 0, dt_iso }) => {
+            const db = getDatabase();
+            let filter: { [key: string]: any } = {};
+            if (dt_iso) {
+                filter.dt_iso = dt_iso;
+            }
+            return await db.collection(city).find(filter).limit(limit).skip(skip).toArray();
         },
-    };
+    },
+};
 
-    const server = new ApolloServer({
-        typeDefs,
-        resolvers,
-    });
+// Server logic
+async function startServer() {
+    const typeDefs = [weatherTypeDefs];
+    const server = new ApolloServer({ typeDefs, resolvers });
 
-    const { url } = await startStandaloneServer(server, {
-        listen: { port: PORT },
-    });
+    try {
+        const { url } = await startStandaloneServer(server, { listen: { port: PORT } });
+        console.log(`Server ready at: ${url}`);
 
-    console.log(`Server ready at: ${url}`);
+        // Graceful shutdown
+        ['SIGTERM', 'SIGINT'].forEach(signal => {
+            process.on(signal as any, async () => {
+                console.log(`${signal} signal received. Shutting down gracefully...`);
+                await disconnectFromDatabase();
+                process.exit(0);
+            });
+        });
 
-    // Graceful shutdown
-    process.on('SIGTERM', async () => {
-        console.log('SIGTERM signal received. Shutting down gracefully...');
-        await client.close();
-        process.exit(0);
-    });
+    } catch (error) {
+        console.error("Error starting server:", error);
+    }
 }
 
-startServer();
+async function main() {
+    try {
+        await connectToDatabase();
+        await createIndexes();
+        await startServer();
+    } catch (error) {
+        console.error("Error:", error);
+        process.exit(1);
+    }
+}
+
+main();
 EOL
 
   cat >Dockerfile <<-EOL
@@ -220,7 +282,7 @@ setup_city_data() {
 EOL
 
   # Define the MongoDB URI
-  MONGO_URI="mongodb://root:example@mongo:27017/weatherDB"
+  MONGO_URI="mongodb://root:example@mongo:27017/recordsDB"
 
   cities=($(jq -r '.cities[]' cities/city_names.json))
 
@@ -246,7 +308,7 @@ services:
     environment:
       - MONGO_INITDB_ROOT_USERNAME=root
       - MONGO_INITDB_ROOT_PASSWORD=example
-      - MONGO_INITDB_DATABASE=weatherDB
+      - MONGO_INITDB_DATABASE=recordsDB
 
   apollo-server:
     build:
@@ -277,11 +339,9 @@ EOL
     exit 1
   }
 
-  sleep 10
+  wait_for_mongodb
 
   echo "exit" | docker exec -i graphql-server-mongo-1 mongosh
-
-  sleep 10
 
   setup_city_data
 
@@ -295,18 +355,33 @@ setup_apollo_and_deps() {
     return
   fi
 
-  rm -rf graphql-server
+declare -A containers=(
+    ["apollo"]="graphql-server-apollo-server-1"
+    ["mongo"]="graphql-server-mongo-1"
+)
 
-  docker system prune -a
+rm -rf graphql-server
 
-  containers=$(docker ps -aq)
+stop_and_remove_container() {
+    local container_name="$1"
 
-  if [ ! -z "$containers" ]; then
-    docker stop $containers
-    docker rm -f $(docker ps -a -q)
-  else
-    echo "No containers are running."
-  fi
+    if docker ps -a | grep -q "$container_name"; then
+        docker stop "$container_name" || {
+            echo "Failed to stop $container_name container"
+            exit 1
+        }
+        docker rm -f "$container_name" || {
+            echo "Failed to remove $container_name container"
+            exit 1
+        }
+    else
+        echo "$container_name container not found."
+    fi
+}
+
+for key in "${!containers[@]}"; do
+    stop_and_remove_container "${containers[$key]}"
+done
 
   mkdir -p graphql-server/src
   cd graphql-server || {
@@ -319,10 +394,26 @@ setup_apollo_and_deps() {
 
 }
 
+wait_for_mongodb() {
+  local retries=5
+
+  for ((i=1;i<=$retries;i++)); do
+    if docker exec graphql-server-mongo-1 mongosh --quiet --eval "db.version()" &> /dev/null; then
+      return 0
+    fi
+    echo "Waiting for MongoDB to start... ($i/$retries)"
+    sleep 10
+  done
+
+  echo "MongoDB did not start after $retries attempts"
+  exit 1
+}
+
 main() {
   setup_docker_rootless
   setup_apollo_and_deps
 
+  docker container ls | grep graphql-server
   echo "Setup completed successfully."
 }
 
