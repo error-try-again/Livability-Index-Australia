@@ -10,11 +10,11 @@ The project has several aspects.
 3. Data retrieval, Modelling, and pagination via Apollo/GraphQL API Gateway.
 
 # RoadMap
-[] Automation via crond scripts
-[] More datasets
-[] Code generation for frontend
-[] More resolvers 
-[] Additional typeDefs 
-[] Aggregate queries on mongodb for faster data processing
-[] Mongodb indexing and sharding
-[] SSL termination 
+- [ ] Automation via crond scripts
+- [ ] More datasets
+- [ ] Code generation for frontend
+- [ ] More resolvers 
+- [ ] Additional typeDefs 
+- [ ] Aggregate queries on mongodb for faster data processing
+- [ ] Mongodb indexing and sharding
+- [ ] SSL termination 
