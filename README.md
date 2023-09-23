@@ -37,3 +37,7 @@ The project has several aspects.
 - [ ] Aggregate queries on mongodb for faster data processing
 - [ ] Mongodb indexing and sharding
 - [ ] SSL termination 
+
+# References:
+[rootless-docker-security][https://docs.docker.com/engine/security/rootless/]
+[Apollo Docs][https://www.apollographql.com/docs/apollo-server/getting-started]
