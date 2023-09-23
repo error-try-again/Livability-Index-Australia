@@ -1,6 +1,5 @@
 # Livability-Index-Australia
-The project aims to build an open, fully scalable, automated, and self-hostable independent livability index system per city based on historical and live data from several Australian government and commercial sources. 
-By representing complex data for weather, traffic, emergency services, rentals, education, and others to distill clearly what it might be like to live in one of Australia's major cities.        
+The project aims to build an open, fully scalable, automated, and self-hostable independent livability index system per city based on historical and live data from several Australian government and commercial sources. By representing complex data for weather, traffic, emergency services, rentals, education, and others to distill clearly what it might be like to live in one of Australia's major cities.        
 
 # Why? 
 How many times have you had conversations with people waxing poetic about what it must be like to live somewhere else? I know I have. It's my personal belief that it's unreasonable to assume via anecdotal or singular sources what it's like to live in a specific place without living there yourself...
