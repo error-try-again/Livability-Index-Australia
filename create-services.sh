@@ -105,52 +105,107 @@ create_server_source_files() {
   cat >src/index.ts <<-'EOL'
 import 'dotenv/config';
 import gql from 'graphql-tag';
-import { startStandaloneServer } from '@apollo/server/standalone';
 import { ApolloServer } from '@apollo/server';
+import { startStandaloneServer } from '@apollo/server/standalone';
 import { MongoClient, Db } from 'mongodb';
 
-const MONGO_URI = process.env.MONGO_URI;
-const PORT = parseInt(process.env.PORT, 10) || 4000;
+const { MONGO_URI = '', DB_NAME = 'recordsDB', PORT: PORT_ENV } = process.env;
+const PORT = parseInt(PORT_ENV, 10) || 4000;
 
 let client: MongoClient;
 let db: Db;
 
-const state = {
-    db: null,
-    mode: null
-};
-
-async function connectToDatabase(): Promise<Db> {
-    if (state.db) {
-        console.log('Already connected to MongoDB');
-        return state.db;
-    }
-
+async function connectToDatabase() {
     try {
         client = await MongoClient.connect(MONGO_URI);
-        state.db = client.db('recordsDB');
-        state.mode = 'connected';
+        db = client.db(DB_NAME);
         console.log('Connected to MongoDB');
-        return state.db;
-    } catch (error) {
-        console.error("Failed to connect to MongoDB:", error);
-        throw error;
+    } catch (err) {
+        console.error("Error connecting to MongoDB:", err);
+        throw err;
     }
-}
-
-
-function getDatabase() {
-    if (!state.db) {
-        throw new Error('Database is not initialized. Call connectToDatabase first.');
-    }
-    return state.db;
 }
 
 async function disconnectFromDatabase() {
-    if (client) {
-        await client.close();
+    try {
+        await client?.close();
+        console.log('Disconnected from MongoDB');
+    } catch (err) {
+        console.error("Error disconnecting from MongoDB:", err);
     }
 }
+
+// Database helper functions
+const buildFilter = (args: QueryArgs): object => {
+    const filter: any = {};
+    if (args.dt_iso) filter.dt_iso = args.dt_iso;
+    if (args.startDate && args.endDate) filter.dt_iso = { $gte: args.startDate, $lte: args.endDate };
+    return filter;
+};
+
+const fetchWeatherData = async (args: QueryArgs) => {
+    const filter = buildFilter(args);
+    return await db.collection(args.city)
+        .find(filter)
+        .limit(args.limit || 10)
+        .skip(args.skip || 0)
+        .map(item => {
+            if (item.rain && item.rain['1h']) {
+                item.rain.duration_1h = item.rain['1h'];
+                delete item.rain['1h'];
+            }
+            return item;
+        })
+        .toArray();
+};
+
+const fetchCities = async () => {
+    const collections = await db.listCollections().toArray();
+    return collections.map(coll => coll.name);
+}
+
+const getAverageTemperatureOverYears = async (city: string, years: number) => {
+    const yearsAgo = new Date();
+    yearsAgo.setFullYear(yearsAgo.getFullYear() - years);
+
+    const data = await db.collection(city)
+        .aggregate([
+            { $match: { dt_iso: { $gte: yearsAgo.toISOString() } } },
+            { $group: { _id: null, avgTemp: { $avg: "$main.temp" } } }
+        ])
+        .toArray();
+
+    return data.length > 0 ? { averageTemperature: data[0].avgTemp } : null;
+};
+
+const getSeasonalAverageOverYears = async (city: string, years: number) => {
+    const yearsAgo = new Date();
+    yearsAgo.setFullYear(yearsAgo.getFullYear() - years);
+
+    return await db.collection(city)
+        .aggregate([
+            { $match: { dt_iso: { $gte: yearsAgo.toISOString() } } },
+            {
+                $group: {
+                    _id: {
+                        season: {
+                            $switch: {
+                                branches: [
+                                    { case: { $lte: [{ $dayOfYear: "$dt_iso" }, 80] }, then: "Summer" },
+                                    { case: { $lte: [{ $dayOfYear: "$dt_iso" }, 172] }, then: "Autumn" },
+                                    { case: { $lte: [{ $dayOfYear: "$dt_iso" }, 264] }, then: "Winter" },
+                                    { case: { $lte: [{ $dayOfYear: "$dt_iso" }, 355] }, then: "Spring" },
+                                ],
+                                default: "Summer"
+                            }
+                        }
+                    },
+                    avgTemp: { $avg: "$main.temp" },
+                }
+            }
+        ])
+        .toArray();
+};
 
 // GraphQL Typedefs
 export const weatherTypeDefs = gql`
@@ -178,6 +233,15 @@ type Main {
     dew_point: Float!
 }
 
+type Stats {
+    averageTemperature: Float!
+}
+
+type SeasonalStats {
+    season: String!
+    averageTemperature: Float!
+}
+
 type Clouds {
     all: Int!
 }
@@ -190,7 +254,7 @@ type WeatherInfo {
 }
 
 type Rain {
-    hour: Float!
+    duration_1h: Float!
 }
 
 type Wind {
@@ -199,63 +263,64 @@ type Wind {
 }
 
 type Query {
-    getWeatherByCity(city: String!, limit: Int, skip: Int): [Weather!]!
-    getWeatherByCityDate(city: String!, limit: Int, skip: Int, dt_iso: String): [Weather!]!
+    getWeatherByCity(city: String!, limit: Int = 10, skip: Int = 0): [Weather!]!
+    getWeatherByCityDate(city: String!, dt_iso: String, limit: Int = 10, skip: Int = 0): [Weather!]!
+    getAllCities: [String!]!
+    getWeatherByDateRange(city: String!, startDate: String!, endDate: String!): [Weather!]!
+    getAverageTemperatureOverYears(city: String!, years: Int = 0): Stats!
+    getSeasonalAverageOverYears(city: String!): [SeasonalStats!]!
+
 }
 `;
 
-// GraphQL Resolvers
+interface QueryArgs {
+    city: string;
+    limit?: number;
+    skip?: number;
+    dt_iso?: string;
+    startDate?: string;
+    endDate?: string;
+}
+
 const resolvers = {
     Query: {
-      getWeatherByCity: async (_, { city, limit = 10, skip = 0 }) => {
-            const db = getDatabase();
-            console.log(db);
-            let filter: { [key: string]: any } = {};
-
-            return await db.collection(city).find().limit(limit).skip(skip).toArray();
-        },
-        getWeatherByCityDate: async (_, { city, limit = 10, skip = 0, dt_iso }) => {
-            const db = getDatabase();
-            console.log(db);
-            let filter: { [key: string]: any } = {};
-            if (dt_iso) {
-                filter.dt_iso = dt_iso;
-            }
-            return await db.collection(city).find(filter).limit(limit).skip(skip).toArray();
-        },
-
+        getWeatherByCity: fetchWeatherData,
+        getWeatherByCityDate: fetchWeatherData,
+        getAllCities: fetchCities,
+        getWeatherByDateRange: fetchWeatherData,
+        getAverageTemperatureOverYears: (_, { city, years = 0 }) => getAverageTemperatureOverYears(city, years),
+        getSeasonalAverageOverYears: (_, { city, years = 0 }) => getSeasonalAverageOverYears(city, years),
     },
 };
 
-// Server logic
 async function startServer() {
     const typeDefs = [weatherTypeDefs];
     const server = new ApolloServer({ typeDefs, resolvers });
 
-    try {
-        const { url } = await startStandaloneServer(server, { listen: { port: PORT } });
-        console.log(`Server ready at: ${url}`);
+    const { url } = await startStandaloneServer(server, { listen: { port: PORT } });
+    console.log(`Server ready at: ${url}`);
 
-        // Graceful shutdown
-        ['SIGTERM', 'SIGINT'].forEach(signal => {
-            process.on(signal as any, async () => {
-                console.log(`${signal} signal received. Shutting down gracefully...`);
-                await disconnectFromDatabase();
-                process.exit(0);
-            });
+    ['SIGTERM', 'SIGINT'].forEach(signal => {
+        process.on(signal as any, async () => {
+            console.log(`${signal} signal received. Shutting down gracefully...`);
+            await disconnectFromDatabase();
+            process.exit(0);
         });
-
-    } catch (error) {
-        console.error("Error starting server:", error);
-    }
+    });
 }
 
 async function main() {
+    if (!MONGO_URI) {
+        console.error("Please set MONGO_URI in your .env file.");
+        process.exit(1);
+    }
+
     try {
         await connectToDatabase();
         await startServer();
     } catch (error) {
-        console.error("Error:", error);
+        console.error("Error initializing the server:", error);
+        await disconnectFromDatabase();
         process.exit(1);
     }
 }
