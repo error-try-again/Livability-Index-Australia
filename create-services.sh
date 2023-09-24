@@ -3,6 +3,8 @@
 # Exit on any error
 set -e
 
+# --------- Docker Setup Functions ---------
+
 setup_docker_rootless() {
   echo "Setting up Docker in rootless mode..."
 
@@ -15,6 +17,8 @@ setup_docker_rootless() {
     echo "Docker rootless mode is already set up."
   fi
 }
+
+# --------- Apollo GraphQL Server Setup Functions ---------
 
 prompt_for_overwrite() {
   echo "The 'graphql-server' directory already exists."
@@ -31,12 +35,14 @@ prompt_for_overwrite() {
   esac
 }
 
-setup_server_files() {
+initialize_server_project() {
   echo "Initializing NPM project..."
   npm init --yes && npm pkg set type="module"
   echo "Installing dependencies..."
   npm install --save-dev typescript @types/node @apollo/server mongodb graphql @types/graphql graphql-tag dotenv joi
+}
 
+create_server_configuration_files() {
   cat >.env <<-EOL
 MONGO_URI=mongodb://root:example@mongo:27017/recordsDB
 PORT=4000
@@ -59,22 +65,42 @@ EOL
 
   cat >package.json <<-EOL
 {
-"type": "module",
-"scripts": {
-    "compile": "tsc",
-    "start": "npm run compile && node ./dist/index.js"
-},
-"dependencies": {
-    "@apollo/server": "^4.9.3",
-    "graphql": "^16.8.1",
-    "mongodb": "^4.2.0"
-},
-"devDependencies": {
-    "@types/node": "^20.6.3",
-    "typescript": "^5.2.2"
-}
+  "type": "module",
+  "scripts": {
+      "compile": "tsc",
+      "start": "npm run compile && node ./dist/index.js"
+  },
+  "dependencies": {
+      "@apollo/server": "^4.9.3",
+      "graphql": "^16.8.1",
+      "mongodb": "^4.2.0"
+  },
+  "devDependencies": {
+      "@types/node": "^20.6.3",
+      "typescript": "^5.2.2"
+  }
 }
 EOL
+
+
+  cat >Dockerfile <<-EOL
+FROM node:20.7.0
+
+WORKDIR /usr/app
+
+COPY package*.json ./
+RUN npm install
+
+COPY . .
+
+RUN npm run compile
+
+EXPOSE 4000
+CMD [ "node", "./dist/index.js" ]
+EOL
+}
+
+create_server_source_files() {
 
   cat >src/index.ts <<-'EOL'
 import 'dotenv/config';
@@ -83,16 +109,15 @@ import { startStandaloneServer } from '@apollo/server/standalone';
 import { ApolloServer } from '@apollo/server';
 import { MongoClient, Db } from 'mongodb';
 
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/recordsDB';
+const MONGO_URI = process.env.MONGO_URI;
 const PORT = parseInt(process.env.PORT, 10) || 4000;
-
 
 let client: MongoClient;
 let db: Db;
 
 const state = {
-  db: null,
-  mode: null
+    db: null,
+    mode: null
 };
 
 async function connectToDatabase(): Promise<Db> {
@@ -103,7 +128,7 @@ async function connectToDatabase(): Promise<Db> {
 
     try {
         client = await MongoClient.connect(MONGO_URI);
-        state.db = client.db();
+        state.db = client.db('recordsDB');
         state.mode = 'connected';
         console.log('Connected to MongoDB');
         return state.db;
@@ -127,84 +152,78 @@ async function disconnectFromDatabase() {
     }
 }
 
-async function createIndexes() {
-    const database = getDatabase();
-
-    // Fetch the list of collections
-    const collections = await database.listCollections().toArray();
-
-    for (const collectionInfo of collections) {
-        const collectionName = collectionInfo.name;
-        const collection = database.collection(collectionName);
-        await collection.createIndex({ dt_iso: 1 }); // 1 indicates ascending order
-        console.log(`Index created for collection: ${collectionName}`);
-    }
-    console.log('Indexes created successfully');
-}
-
-
 // GraphQL Typedefs
 export const weatherTypeDefs = gql`
-        type Weather {
-            dt: Int!
-            dt_iso: String!
-            timezone: Int!
-            main: Main!
-            clouds: Clouds!
-            weather: [WeatherInfo!]!
-            rain: Rain
-            wind: Wind!
-            lat: Float!
-            lon: Float!
-            city_name: String!
-        }
+type Weather {
+    dt: Int!
+    dt_iso: String!
+    timezone: Int!
+    main: Main!
+    clouds: Clouds!
+    weather: [WeatherInfo!]!
+    rain: Rain
+    wind: Wind!
+    lat: Float!
+    lon: Float!
+    city_name: String!
+}
 
-        type Main {
-            temp: Float!
-            temp_min: Float!
-            temp_max: Float!
-            feels_like: Float!
-            pressure: Int!
-            humidity: Int!
-            dew_point: Float!
-        }
+type Main {
+    temp: Float!
+    temp_min: Float!
+    temp_max: Float!
+    feels_like: Float!
+    pressure: Int!
+    humidity: Int!
+    dew_point: Float!
+}
 
-        type Clouds {
-            all: Int!
-        }
+type Clouds {
+    all: Int!
+}
 
-        type WeatherInfo {
-            id: Int!
-            main: String!
-            description: String!
-            icon: String!
-        }
+type WeatherInfo {
+    id: Int!
+    main: String!
+    description: String!
+    icon: String!
+}
 
-        type Rain {
-            hour: Float!
-        }
+type Rain {
+    hour: Float!
+}
 
-        type Wind {
-            speed: Float!
-            deg: Int!
-        }
+type Wind {
+    speed: Float!
+    deg: Int!
+}
 
-        type Query {
-            getWeatherByCity(city: String!, limit: Int, skip: Int, dt_iso: String): [Weather!]!
-        }
+type Query {
+    getWeatherByCity(city: String!, limit: Int, skip: Int): [Weather!]!
+    getWeatherByCityDate(city: String!, limit: Int, skip: Int, dt_iso: String): [Weather!]!
+}
 `;
 
 // GraphQL Resolvers
 const resolvers = {
     Query: {
-        getWeatherByCity: async (_, { city, limit = 10, skip = 0, dt_iso }) => {
+      getWeatherByCity: async (_, { city, limit = 10, skip = 0 }) => {
             const db = getDatabase();
+            console.log(db);
+            let filter: { [key: string]: any } = {};
+
+            return await db.collection(city).find().limit(limit).skip(skip).toArray();
+        },
+        getWeatherByCityDate: async (_, { city, limit = 10, skip = 0, dt_iso }) => {
+            const db = getDatabase();
+            console.log(db);
             let filter: { [key: string]: any } = {};
             if (dt_iso) {
                 filter.dt_iso = dt_iso;
             }
             return await db.collection(city).find(filter).limit(limit).skip(skip).toArray();
         },
+
     },
 };
 
@@ -234,7 +253,6 @@ async function startServer() {
 async function main() {
     try {
         await connectToDatabase();
-        await createIndexes();
         await startServer();
     } catch (error) {
         console.error("Error:", error);
@@ -244,26 +262,17 @@ async function main() {
 
 main();
 EOL
-
-  cat >Dockerfile <<-EOL
-FROM node:20.7.0
-
-WORKDIR /usr/app
-
-COPY package*.json ./
-RUN npm install
-
-COPY . .
-
-RUN npm run compile
-
-EXPOSE 4000
-CMD [ "node", "./dist/index.js" ]
-EOL
 }
 
-setup_city_data() {
+setup_server_files() {
+  initialize_server_project
+  create_server_configuration_files
+  create_server_source_files
+}
 
+# --------- City Data Setup Functions ---------
+
+setup_city_data_files() {
   mkdir -p cities .
   cp -R ~/cities/* cities/
 
@@ -280,21 +289,22 @@ setup_city_data() {
 ]
 }
 EOL
+}
 
-  # Define the MongoDB URI
-  MONGO_URI="mongodb://root:example@mongo:27017/recordsDB"
+import_city_data_to_mongo() {
+  local MONGO_URI="mongodb://root:example@mongo:27017/recordsDB"
+  local cities=($(jq -r '.cities[]' cities/city_names.json))
 
-  cities=($(jq -r '.cities[]' cities/city_names.json))
-
-  # Iterate over each city and import data
   for city in "${cities[@]}"; do
     echo "Attempting to import data for $city"
-    json_file="cities/${city}.json"
+    local json_file="cities/${city}.json"
     docker exec -i graphql-server-mongo-1 mongoimport --uri="$MONGO_URI" --authenticationDatabase=admin --collection="$city" --file="$json_file" --jsonArray
   done
 }
 
-setup_docker_environment() {
+# --------- Docker Environment Setup Functions ---------
+
+create_docker_compose_file() {
   cat >docker-compose.yml <<-EOL
 version: '3.8'
 services:
@@ -324,27 +334,79 @@ services:
 volumes:
   mongodb_data:
 EOL
+}
 
+build_docker_image() {
   echo "Building Docker image..."
   docker build -t apollo . || {
     echo "Failed to build Docker image"
     exit 1
   }
+}
 
-  sleep 10
+sleep 10
 
+run_docker_compose() {
   echo "Running Docker Compose..."
   docker compose up -d || {
     echo "Failed to run Docker Compose"
     exit 1
   }
+}
 
+wait_for_mongodb() {
+  local retries=5
+
+  for ((i = 1; i <= $retries; i++)); do
+    if docker exec graphql-server-mongo-1 mongosh --quiet --eval "db.version()" &>/dev/null; then
+      return 0
+    fi
+    echo "Waiting for MongoDB to start... ($i/$retries)"
+    sleep 10
+  done
+
+  echo "MongoDB did not start after $retries attempts"
+  exit 1
+}
+
+setup_docker_environment() {
+  create_docker_compose_file
+  build_docker_image
+  run_docker_compose
   wait_for_mongodb
+  import_city_data_to_mongo
+}
 
-  echo "exit" | docker exec -i graphql-server-mongo-1 mongosh
+# --------- Apollo and Dependencies Setup Functions ---------
 
-  setup_city_data
+stop_and_remove_container() {
+  local container_name="$1"
 
+  if docker ps -a | grep -q "$container_name"; then
+    docker stop "$container_name" || {
+      echo "Failed to stop $container_name container"
+      exit 1
+    }
+    docker rm -f "$container_name" || {
+      echo "Failed to remove $container_name container"
+      exit 1
+    }
+  else
+    echo "$container_name container not found."
+  fi
+}
+
+cleanup_previous_installation() {
+  declare -A containers=(
+    ["apollo"]="graphql-server-apollo-server-1"
+    ["mongo"]="graphql-server-mongo-1"
+  )
+
+  for key in "${!containers[@]}"; do
+    stop_and_remove_container "${containers[$key]}"
+  done
+
+  rm -rf graphql-server
 }
 
 setup_apollo_and_deps() {
@@ -355,59 +417,17 @@ setup_apollo_and_deps() {
     return
   fi
 
-declare -A containers=(
-    ["apollo"]="graphql-server-apollo-server-1"
-    ["mongo"]="graphql-server-mongo-1"
-)
-
-rm -rf graphql-server
-
-stop_and_remove_container() {
-    local container_name="$1"
-
-    if docker ps -a | grep -q "$container_name"; then
-        docker stop "$container_name" || {
-            echo "Failed to stop $container_name container"
-            exit 1
-        }
-        docker rm -f "$container_name" || {
-            echo "Failed to remove $container_name container"
-            exit 1
-        }
-    else
-        echo "$container_name container not found."
-    fi
-}
-
-for key in "${!containers[@]}"; do
-    stop_and_remove_container "${containers[$key]}"
-done
+  cleanup_previous_installation
 
   mkdir -p graphql-server/src
-  cd graphql-server || {
-    echo "Failed to change directory to graphql-server"
-    exit 1
-  }
+  cd graphql-server
 
   setup_server_files
+  setup_city_data_files
   setup_docker_environment
-
 }
 
-wait_for_mongodb() {
-  local retries=5
-
-  for ((i=1;i<=$retries;i++)); do
-    if docker exec graphql-server-mongo-1 mongosh --quiet --eval "db.version()" &> /dev/null; then
-      return 0
-    fi
-    echo "Waiting for MongoDB to start... ($i/$retries)"
-    sleep 10
-  done
-
-  echo "MongoDB did not start after $retries attempts"
-  exit 1
-}
+# --------- Main Function ---------
 
 main() {
   setup_docker_rootless
