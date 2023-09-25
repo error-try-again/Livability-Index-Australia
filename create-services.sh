@@ -39,7 +39,7 @@ initialize_server_project() {
   echo "Initializing NPM project..."
   npm init --yes && npm pkg set type="module"
   echo "Installing dependencies..."
-  npm install --save-dev typescript @types/node @apollo/server mongodb graphql @types/graphql graphql-tag dotenv joi
+  npm install --save-dev typescript @types/node @apollo/server mongodb graphql @types/graphql graphql-tag dotenv joi nodemon ts-node
 }
 
 create_server_configuration_files() {
@@ -67,8 +67,8 @@ EOL
 {
   "type": "module",
   "scripts": {
-      "compile": "tsc",
-      "start": "npm run compile && node ./dist/index.js"
+    "start": "nodemon ./dist/index.js",
+    "compile": "tsc"
   },
   "dependencies": {
       "@apollo/server": "^4.9.3",
@@ -84,19 +84,24 @@ EOL
 
 
   cat >Dockerfile <<-EOL
+# Specify node version
 FROM node:20.7.0
 
+# Specify work directory
 WORKDIR /usr/app
 
+# Copy over package.json and package-lock.json
 COPY package*.json ./
 RUN npm install
 
+# Copy over other source files
 COPY . .
 
-RUN npm run compile
-
+# Expose the port the app runs on
 EXPOSE 4000
-CMD [ "node", "./dist/index.js" ]
+
+# Command to run on container start
+CMD [ "npm", "start" ]
 EOL
 }
 
@@ -135,11 +140,17 @@ async function disconnectFromDatabase() {
     }
 }
 
-// Database helper functions
 const buildFilter = (args: QueryArgs): object => {
     const filter: any = {};
-    if (args && args.dt_iso) filter.dt_iso = args.dt_iso;
-    if (args && args.startDate && args.endDate) filter.dt_iso = { $gte: args.startDate, $lte: args.endDate };
+
+    if (args.dt_iso) filter.dt_iso = args.dt_iso;
+    if (args.startDate && args.endDate) filter.dt_iso = { $gte: args.startDate, $lte: args.endDate };
+    if (args.years) {
+        const yearsAgo = new Date();
+        yearsAgo.setFullYear(yearsAgo.getFullYear() - args.years);
+        filter.dt_iso = { $gte: yearsAgo.toISOString() };
+    }
+
     return filter;
 };
 
@@ -172,12 +183,11 @@ const fetchCities = async () => {
 }
 
 const getAverageTemperatureOverYears = async (args: QueryArgs) => {
-    const yearsAgo = new Date();
-    yearsAgo.setFullYear(yearsAgo.getFullYear() - args.years);
+    const filter = buildFilter(args);
 
     const data = await db.collection(args.city)
         .aggregate([
-            { $match: { dt_iso: { $gte: yearsAgo.toISOString() } } },
+            { $match: filter },
             { $group: { _id: null, avgTemp: { $avg: "$main.temp" } } }
         ])
         .toArray();
@@ -186,8 +196,7 @@ const getAverageTemperatureOverYears = async (args: QueryArgs) => {
 };
 
 const getSeasonalAverageOverYears = async (args: QueryArgs) => {
-    const yearsAgo = new Date();
-    yearsAgo.setFullYear(yearsAgo.getFullYear() - args.years);
+    const filter = buildFilter(args);
 
     return await db.collection(args.city)
         .aggregate([
@@ -201,12 +210,12 @@ const getSeasonalAverageOverYears = async (args: QueryArgs) => {
                     }
                 }
             },
-            { $match: { convertedDate: { $gte: yearsAgo } } },
+            { $match: filter },
             {
                 $group: {
                     _id: {
                         season: {
-                            $switch: {
+                            $switch: {n file or by a
                                 branches: [
                                     { case: { $lte: [{ $dayOfYear: "$convertedDate" }, 80] }, then: "Summer" },
                                     { case: { $lte: [{ $dayOfYear: "$convertedDate" }, 172] }, then: "Autumn" },
@@ -223,6 +232,7 @@ const getSeasonalAverageOverYears = async (args: QueryArgs) => {
         ])
         .toArray();
 };
+
 
 // GraphQL Typedefs
 export const weatherTypeDefs = gql`
@@ -404,6 +414,8 @@ services:
       dockerfile: Dockerfile
     ports:
       - "4000:4000"
+    volumes:
+      - ~/graphql-server/src:/usr/app/src
     depends_on:
       - mongo
     environment:
