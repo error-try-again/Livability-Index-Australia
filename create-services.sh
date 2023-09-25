@@ -39,7 +39,7 @@ initialize_server_project() {
   echo "Initializing NPM project..."
   npm init --yes && npm pkg set type="module"
   echo "Installing dependencies..."
-  npm install --save-dev typescript @types/node @apollo/server mongodb graphql @types/graphql graphql-tag dotenv joi nodemon ts-node
+  npm install --save-dev typescript @types/node @apollo/server mongodb graphql @types/graphql graphql-tag dotenv joi ts-node-dev nodemon
 }
 
 create_server_configuration_files() {
@@ -50,16 +50,20 @@ EOL
 
   cat >tsconfig.json <<-EOL
 {
-"compilerOptions": {
-    "rootDirs": ["src"],
-    "outDir": "dist",
-    "lib": ["es2020"],
-    "target": "es2020",
-    "module": "esnext",
-    "moduleResolution": "node",
-    "esModuleInterop": true,
-    "types": ["node"]
-}
+  "ts-node": {
+    "esm": true
+  },
+  "compilerOptions": {
+      "rootDirs": ["src"],
+      "outDir": "dist",
+      "lib": ["es2020"],
+      "target": "es2020",
+      "module": "ESNext",
+      "target": "ESNext",
+      "moduleResolution": "node",
+      "esModuleInterop": true,
+      "types": ["node"]
+  }
 }
 EOL
 
@@ -67,7 +71,7 @@ EOL
 {
   "type": "module",
   "scripts": {
-    "start": "nodemon ./dist/index.js",
+    "start": "npm run compile && nodemon --exec node --loader ts-node/esm src/index.ts",
     "compile": "tsc"
   },
   "dependencies": {
@@ -81,7 +85,6 @@ EOL
   }
 }
 EOL
-
 
   cat >Dockerfile <<-EOL
 # Specify node version
@@ -215,7 +218,7 @@ const getSeasonalAverageOverYears = async (args: QueryArgs) => {
                 $group: {
                     _id: {
                         season: {
-                            $switch: {n file or by a
+                            $switch: {
                                 branches: [
                                     { case: { $lte: [{ $dayOfYear: "$convertedDate" }, 80] }, then: "Summer" },
                                     { case: { $lte: [{ $dayOfYear: "$convertedDate" }, 172] }, then: "Autumn" },
@@ -415,7 +418,7 @@ services:
     ports:
       - "4000:4000"
     volumes:
-      - ~/graphql-server/src:/usr/app/src
+      - ~/graphql-server/:/usr/app/
     depends_on:
       - mongo
     environment:
