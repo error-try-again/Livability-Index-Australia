@@ -84,6 +84,22 @@ class WebScraper:
         self.pages_crawled = 0  # Counter for pages crawled
         self.lock = threading.Lock()  # Lock for thread safety
 
+    def print_logs(self, num_lines=5):
+        """
+        Reads the most recent lines from the log file and prints them to the console.
+
+        Args:
+        - num_lines (int): Number of recent lines to print. Default is 5.
+        """
+        log_file_path = 'web_scraper.log'
+        if os.path.exists(log_file_path):
+            with open(log_file_path, 'r') as log_file:
+                lines = log_file.readlines()
+                for line in lines[-num_lines:]:
+                    print(line.strip())
+        else:
+            print("Log file not found.")
+
     def worker(self, url_queue):
         # Worker function for threads
         while not url_queue.empty():
@@ -108,37 +124,28 @@ class WebScraper:
 
         return f"Crawled {self.pages_crawled} out of an estimated {total_links} pages. Estimated time remaining: {estimated_time_str}."
 
-  def fetch_data_from_url(self, url, retries=3, backoff_in_seconds=10):
-    headers = {"User-Agent": self.USER_AGENT}
-    start_time = time.time()
-    try:
-        response = requests.get(url, headers=headers)
-        elapsed_time = time.time() - start_time
+    def fetch_data_from_url(self, url, retries=3, backoff_in_seconds=10):
+        headers = {"User-Agent": self.USER_AGENT}
+        start_time = time.time()
+        try:
+            response = requests.get(url, headers=headers)
+            elapsed_time = time.time() - start_time
 
-        # Handle 429 Status Code with exponential backoff
-        if response.status_code == 429 and retries > 0:
-            wait_time = backoff_in_seconds * (2 ** (3 - retries)) + randint(0, 10)  # Exponential backoff with jitter
-            logging.warning(f"Rate limit detected for URL {url}. Pausing for {wait_time} seconds.")
-            time.sleep(wait_time)
-            logging.info(f"Resuming after rate limit wait for URL {url}.")
-            return self.fetch_data_from_url(url, retries-1)
+            # Handle 429 Status Code with exponential backoff
+            if response.status_code == 429 and retries > 0:
+                wait_time = backoff_in_seconds * (2 ** (3 - retries)) + randint(0, 10)  # Exponential backoff with jitter
+                logging.warning(f"Rate limit detected for URL {url}. Pausing for {wait_time} seconds.")
+                time.sleep(wait_time)
+                logging.info(f"Resuming after rate limit wait for URL {url}.")
+                return self.fetch_data_from_url(url, retries-1)
 
-        response.raise_for_status()
-        logging.info(f"Fetched data from {url} in {elapsed_time:.2f} seconds")
+            response.raise_for_status()
+            logging.info(f"Fetched data from {url} in {elapsed_time:.2f} seconds")
 
-        # Monitor Server Response Times
-        if elapsed_time > 5:  # Assuming 5 seconds is a threshold for a slow response
-            logging.warning(f"Slow response from {url}. Consider reducing the request rate.")
-            self.DELAY += 1  # Increase delay by 1 second
-
-        return response.text
-    except requests.RequestException as e:
-        if retries > 0:
-            logging.warning(f"Error fetching data from {url}. Retrying... Remaining retries: {retries-1}")
-            time.sleep(backoff_in_seconds)
-            return self.fetch_data_from_url(url, retries-1)
-        logging.error(f"Error fetching data from {url}: {e}")
-        return ""
+            # Monitor Server Response Times
+            if elapsed_time > 5:  # Assuming 5 seconds is a threshold for a slow response
+                logging.warning(f"Slow response from {url}. Consider reducing the request rate.")
+                self.DELAY += 1  # Increase delay by 1 second
 
             return response.text
         except requests.RequestException as e:
@@ -283,6 +290,8 @@ if __name__ == "__main__":
 
     scraper = WebScraper(user_agent=USER_AGENT)
     scraper.main(urls)
+    print("\nMost recent logs from the web scraper:")
+    scraper.print_logs()
 EOL
       echo "Python scraper written to $PYTHON_SCRAPER_FILENAME"
 }
