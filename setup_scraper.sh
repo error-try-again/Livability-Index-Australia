@@ -246,6 +246,10 @@ class WebScraper:
                 if parsed_link.netloc == domain and link not in self.visited_links:
                     # Check for redundant URL patterns (e.g., calendar pages)
                     if "/calendar/" not in link:
+                        # Ignore .zip files
+                        if link.endswith('.zip'):
+                            logging.info(f"Ignoring .zip file: {link}")
+                            continue
                         if link.endswith('.xlsx') and self.robots_parser.is_allowed(self.USER_AGENT, link):
                             self.download_file(link)
                         elif not link.endswith('.xlsx'):
