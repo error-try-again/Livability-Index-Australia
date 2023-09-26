@@ -61,15 +61,23 @@ import logging
 import hashlib
 import threading
 import queue
+from collections import deque
 import datetime
 from random import randint
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urlunparse
 from robotexclusionrulesparser import RobotExclusionRulesParser
 from collections import deque
 
 # Configure logging settings
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', filename='web_scraper.log', filemode='w')
+
+# Load visited links from persistent storage
+if os.path.exists("visited_links.json"):
+    with open("visited_links.json", "r") as f:
+        visited_links = set(json.load(f))
+else:
+    visited_links = set()
 
 class WebScraper:
     def __init__(self, user_agent, delay=2, download_folder="downloaded_files"):
@@ -83,6 +91,14 @@ class WebScraper:
         self.start_time = None  # Time when the scraping started
         self.pages_crawled = 0  # Counter for pages crawled
         self.lock = threading.Lock()  # Lock for thread safety
+
+    def normalize_url(self, url):
+        """Normalize the given URL."""
+        parsed = urlparse(url)
+        # Remove URL fragment and sort query parameters
+        normalized = parsed._replace(fragment="", query="&".join(sorted(parsed.query.split("&"))))
+        # Convert to lowercase and remove trailing slash
+        return urlunparse(normalized).rstrip("/").lower()
 
     def print_logs(self, num_lines=5):
         """
@@ -127,6 +143,7 @@ class WebScraper:
     def fetch_data_from_url(self, url, retries=3, backoff_in_seconds=10):
         headers = {"User-Agent": self.USER_AGENT}
         start_time = time.time()
+        logging.debug(f"Starting request for URL: {url}")
         try:
             response = requests.get(url, headers=headers)
             elapsed_time = time.time() - start_time
@@ -147,6 +164,7 @@ class WebScraper:
                 logging.warning(f"Slow response from {url}. Consider reducing the request rate.")
                 self.DELAY += 1  # Increase delay by 1 second
 
+            logging.debug(f"Finished request for URL: {url}")
             return response.text
         except requests.RequestException as e:
             if retries > 0:
@@ -223,13 +241,15 @@ class WebScraper:
                 logging.error(f"Error parsing content from {url}: {e}")
                 continue
             for a in soup.find_all('a', href=True):
-                link = urljoin(url, a['href'])
+                link = self.normalize_url(urljoin(url, a['href']))
                 parsed_link = urlparse(link)
                 if parsed_link.netloc == domain and link not in self.visited_links:
-                    if link.endswith('.xlsx') and self.robots_parser.is_allowed(self.USER_AGENT, link):
-                        self.download_file(link)
-                    elif not link.endswith('.xlsx'):
-                        queue.append(link)
+                    # Check for redundant URL patterns (e.g., calendar pages)
+                    if "/calendar/" not in link:
+                        if link.endswith('.xlsx') and self.robots_parser.is_allowed(self.USER_AGENT, link):
+                            self.download_file(link)
+                        elif not link.endswith('.xlsx'):
+                            queue.append(link)
             time.sleep(self.DELAY)
 
     def main(self, urls):
@@ -245,6 +265,7 @@ class WebScraper:
             domain = parsed_url.netloc
             if domain not in self.visited_domains:
                 robots_url = urljoin(url, "/robots.txt")
+                logging.debug(f"Fetching robots.txt from {robots_url}")
                 self.robots_parser.fetch(robots_url)
                 if self.robots_parser.get_crawl_delay("*"):
                     self.DELAY = max(self.DELAY, self.robots_parser.get_crawl_delay("*"))
@@ -265,16 +286,19 @@ class WebScraper:
         # Wait for all threads to finish
         for thread in threads:
             thread.join()
+        logging.debug(f"Thread {thread.name} has finished.")
 
         # Backup visited links after scraping
-        with open("backup.json", "w") as f:
+        with open("visited_links.json", "w") as f:
             json.dump(list(self.visited_links), f)
+
 
         logging.info(f"Visited links: {len(self.visited_links)}, Downloaded files: {len(os.listdir(self.DOWNLOAD_FOLDER))}")
 
 if __name__ == "__main__":
     DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-    USER_AGENT = input("Enter User-Agent (or press Enter to use default): ") or DEFAULT_USER_AGENT
+#    USER_AGENT = input("Enter User-Agent (or press Enter to use default): ") or DEFAULT_USER_AGENT
+    USER_AGENT = DEFAULT_USER_AGENT
     logging.info(f"Using User-Agent: {USER_AGENT}")
 
     try:
