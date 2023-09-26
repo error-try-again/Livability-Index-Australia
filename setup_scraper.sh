@@ -62,6 +62,7 @@ import hashlib
 import threading
 import queue
 import datetime
+from random import randint
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 from robotexclusionrulesparser import RobotExclusionRulesParser
@@ -107,17 +108,44 @@ class WebScraper:
 
         return f"Crawled {self.pages_crawled} out of an estimated {total_links} pages. Estimated time remaining: {estimated_time_str}."
 
-    def fetch_data_from_url(self, url):
-        # Fetch data from a given URL
-        headers = {"User-Agent": self.USER_AGENT}
-        try:
-            start_time = time.time()
-            response = requests.get(url, headers=headers)
-            response.raise_for_status()
-            elapsed_time = time.time() - start_time
-            logging.info(f"Fetched data from {url} in {elapsed_time:.2f} seconds")
+  def fetch_data_from_url(self, url, retries=3, backoff_in_seconds=10):
+    headers = {"User-Agent": self.USER_AGENT}
+    start_time = time.time()
+    try:
+        response = requests.get(url, headers=headers)
+        elapsed_time = time.time() - start_time
+
+        # Handle 429 Status Code with exponential backoff
+        if response.status_code == 429 and retries > 0:
+            wait_time = backoff_in_seconds * (2 ** (3 - retries)) + randint(0, 10)  # Exponential backoff with jitter
+            logging.warning(f"Rate limit detected for URL {url}. Pausing for {wait_time} seconds.")
+            time.sleep(wait_time)
+            logging.info(f"Resuming after rate limit wait for URL {url}.")
+            return self.fetch_data_from_url(url, retries-1)
+
+        response.raise_for_status()
+        logging.info(f"Fetched data from {url} in {elapsed_time:.2f} seconds")
+
+        # Monitor Server Response Times
+        if elapsed_time > 5:  # Assuming 5 seconds is a threshold for a slow response
+            logging.warning(f"Slow response from {url}. Consider reducing the request rate.")
+            self.DELAY += 1  # Increase delay by 1 second
+
+        return response.text
+    except requests.RequestException as e:
+        if retries > 0:
+            logging.warning(f"Error fetching data from {url}. Retrying... Remaining retries: {retries-1}")
+            time.sleep(backoff_in_seconds)
+            return self.fetch_data_from_url(url, retries-1)
+        logging.error(f"Error fetching data from {url}: {e}")
+        return ""
+
             return response.text
         except requests.RequestException as e:
+            if retries > 0:
+                logging.warning(f"Error fetching data from {url}. Retrying... Remaining retries: {retries-1}")
+                time.sleep(backoff_in_seconds)
+                return self.fetch_data_from_url(url, retries-1)
             logging.error(f"Error fetching data from {url}: {e}")
             return ""
 
@@ -135,13 +163,13 @@ class WebScraper:
                 hash_md5.update(chunk)
         return hash_md5.hexdigest()
 
-    def download_file(self, url):
+    def download_file(self, url, force_download=False):
         # Download a file from a given URL
         local_filename = os.path.join(self.DOWNLOAD_FOLDER, url.split('/')[-1])  # Define local_filename
         if not os.path.exists(self.DOWNLOAD_FOLDER):
             os.makedirs(self.DOWNLOAD_FOLDER)
             logging.info(f"Created download directory: {self.DOWNLOAD_FOLDER}")
-        if os.path.exists(local_filename):
+        if os.path.exists(local_filename) and not force_download:
             # Check if the file on the server has the same MD5 hash as the local file
             response = requests.head(url)
             if 'Content-MD5' in response.headers:
@@ -198,6 +226,12 @@ class WebScraper:
             time.sleep(self.DELAY)
 
     def main(self, urls):
+        # Backup and Resume
+        if os.path.exists("backup.json"):
+            with open("backup.json", "r") as f:
+                self.visited_links = set(json.load(f))
+            os.remove("backup.json")
+
         # Main function to start the scraping process
         for url in urls:
             parsed_url = urlparse(url)
@@ -224,6 +258,10 @@ class WebScraper:
         # Wait for all threads to finish
         for thread in threads:
             thread.join()
+
+        # Backup visited links after scraping
+        with open("backup.json", "w") as f:
+            json.dump(list(self.visited_links), f)
 
         logging.info(f"Visited links: {len(self.visited_links)}, Downloaded files: {len(os.listdir(self.DOWNLOAD_FOLDER))}")
 
