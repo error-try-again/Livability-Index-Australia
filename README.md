@@ -7,7 +7,9 @@ Or an enormous amount of relevant data.
 
 The 'relevant data' here refers to data coming from multiple institutional sources that tends to be distributed with contrived means of access or interpretation; collating these data points can be challenging, which is the problem this project aims to solve. 
 
-# Important notes:
+# How to run? 
+`chmod +x setup.sh create-services.sh setup_scraper.sh && ./setup.sh`
+
 *setup.sh uses a default password for docker-primary, so after running setup.sh you need to change it, especially if you're working on a remote system.*
 
 For bonus points, just copy your public key over and disable password logins altogether. 
@@ -25,6 +27,16 @@ Once it's copied - in /etc/ssh/sshd_config set the following lines
 to log in just use 
 
 `ssh -i ~/.ssh/my-key docker-primary@ip`
+
+Once ssh'd in, to kick off the rootless docker setup & build the servers just run 
+
+`./create-services.sh`
+
+To start the crawler codegen & the cralwer itself just run 
+
+`./setup_scraper.sh`
+
+# Technical Summary
 
 The project has several aspects. 
 
@@ -44,7 +56,8 @@ The project has several aspects.
 - [ ] Additional typeDefs 
 - [ ] Aggregate queries on MongoDB for faster data processing
 - [ ] Mongodb indexing and sharding
-- [ ] SSL termination 
+- [ ] SSL termination
+- [ ] Scheduled filtering & importing of crawled datasets
 
 # References:
 [rootless-docker-security](https://docs.docker.com/engine/security/rootless/)
