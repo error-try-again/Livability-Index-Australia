@@ -61,8 +61,10 @@ import logging
 import hashlib
 import threading
 import queue
-from collections import deque
 import datetime
+import gc
+import tracemalloc
+from collections import deque
 from random import randint
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse, urlunparse
@@ -246,15 +248,18 @@ class WebScraper:
                 if parsed_link.netloc == domain and link not in self.visited_links:
                     # Check for redundant URL patterns (e.g., calendar pages)
                     if "/calendar/" not in link:
-                        # Ignore .zip files
-                        if link.endswith('.zip'):
-                            logging.info(f"Ignoring .zip file: {link}")
+                        # Ignore .zip, .pdf, .doc, .docx files
+                        if any(link.endswith(ext) for ext in ['.zip', '.pdf', '.doc', '.docx', '.ppt', '.pptx', '.png', '.jpg', '.jpeg', '.gif', '.csv', '.xml', '.json', '.txt']):
+                            logging.info(f"Ignoring file: {link}")
                             continue
                         if link.endswith('.xlsx') and self.robots_parser.is_allowed(self.USER_AGENT, link):
                             self.download_file(link)
                         elif not link.endswith('.xlsx'):
                             queue.append(link)
             time.sleep(self.DELAY)
+
+        del queue  # Clear the queue
+        gc.collect()  # Run garbage collection
 
     def main(self, urls):
         # Backup and Resume
@@ -316,8 +321,16 @@ if __name__ == "__main__":
         print("Please ensure that the urls.json file exists and is correctly formatted.")
         exit(1)
 
+    tracemalloc.start()  # Start memory profiling
+
     scraper = WebScraper(user_agent=USER_AGENT)
     scraper.main(urls)
+
+    snapshot = tracemalloc.take_snapshot()  # Take memory snapshot
+    top_stats = snapshot.statistics('lineno')  # Get top memory consuming lines
+    for stat in top_stats[:10]:  # Print top 10 memory consuming lines
+        print(stat)
+
     print("\nMost recent logs from the web scraper:")
     scraper.print_logs()
 EOL
