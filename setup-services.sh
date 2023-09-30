@@ -21,6 +21,8 @@ setup_docker_rootless() {
 # --------- Apollo GraphQL Server Setup Functions ---------
 
 prompt_for_overwrite() {
+  local choice
+
   echo "The 'graphql-server' directory already exists."
   read -p "Do you want to overwrite it? (yes/no): " choice
 
@@ -391,8 +393,12 @@ EOL
 }
 
 import_city_data_to_mongo() {
-  local MONGO_URI="mongodb://root:example@mongo:27017/recordsDB"
-  local cities=($(jq -r '.cities[]' cities/city_names.json))
+  local MONGO_URI
+  local cities
+  local city
+
+  MONGO_URI="mongodb://root:example@mongo:27017/recordsDB"
+  cities=($(jq -r '.cities[]' cities/city_names.json))
 
   for city in "${cities[@]}"; do
     echo "Attempting to import data for $city"
@@ -456,7 +462,8 @@ run_docker_compose() {
 }
 
 wait_for_mongodb() {
-  local retries=5
+  local retries
+  retries=5
 
   for ((i = 1; i <= $retries; i++)); do
     if docker exec graphql-server-mongo-1 mongosh --quiet --eval "db.version()" &>/dev/null; then
@@ -499,6 +506,9 @@ stop_and_remove_container() {
 }
 
 cleanup_previous_installation() {
+  local containers
+  local key
+
   declare -A containers=(
     ["apollo"]="graphql-server-apollo-server-1"
     ["mongo"]="graphql-server-mongo-1"
