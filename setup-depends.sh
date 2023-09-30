@@ -5,9 +5,12 @@ set -e
 
 # Install required packages for rootless-docker, json processing, request handling
 install_packages() {
-    local PACKAGES=(docker.io docker-doc docker-compose podman-docker containerd runc)
-    for pkg in "${PACKAGES[@]}"; do
-        sudo apt-get remove -y "$pkg"
+    local PACKAGES
+    local package
+    PACKAGES=(docker.io docker-doc docker-compose podman-docker containerd runc)
+
+    for package in "${PACKAGES[@]}"; do
+        sudo apt-get remove -y "$package"
     done
 
     sudo apt-get update
@@ -20,8 +23,11 @@ setup_docker() {
     curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
     sudo chmod a+r /etc/apt/keyrings/docker.gpg
 
-    local DEB_ARCH=$(dpkg --print-architecture)
-    local VERSION_CODENAME=$(. /etc/os-release && echo "$VERSION_CODENAME")
+    local DEB_ARCH
+    DEB_ARCH=$(dpkg --print-architecture)
+
+    local VERSION_CODENAME
+    VERSION_CODENAME=$(. /etc/os-release && echo "$VERSION_CODENAME")
     echo "deb [arch=${DEB_ARCH} signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu ${VERSION_CODENAME} stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
 }
 
@@ -41,7 +47,10 @@ setup_nvm_node() {
     local NVM_VERSION="v0.39.5"
     curl -o- "https://raw.githubusercontent.com/nvm-sh/nvm/$NVM_VERSION/install.sh" | bash
 
-    export NVM_DIR="$HOME/.nvm"
+    local NVM_DIR
+    NVM_DIR="$HOME/.nvm"
+    export NVM_DIR
+
     [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
     nvm install node
     nvm use node
