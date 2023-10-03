@@ -1,192 +1,383 @@
 import os
-import logging
-import multiprocessing
-import random
 import sys
 import time
-from pymongo import MongoClient, errors
-from openpyxl import load_workbook
+import logging
+import multiprocessing
+import hashlib
+import pandas as pd
+from typing import Dict, Any
+from openpyxl import Workbook
+from pymongo import MongoClient, errors as mongo_errors
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
-from collections import defaultdict
-from worker_module import worker
 
-# Logging setup
 logging.basicConfig(format='%(asctime)s - %(levelname)s: %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Configuration Constants (These could be moved to a separate config file or environment variables)
-CONFIG = {
-    "MONGO_URI": "mongodb://root:example@localhost:27017/admin",
-    "DATABASE_NAME": "recordsDB",
-    "COLLECTION_NAME": "xlsxData",
-    "MAX_RETRIES": 3,
-    "CHUNK_SIZE": 1000,
-    "NUM_PROCESSES": 2 * multiprocessing.cpu_count(),
-    "SCHEMA_DETERMINATION_SAMPLE_SIZE": None,  # Will be calculated later
-    "SCHEMA_THRESHOLD": None,  # Will be calculated later
-    "WATCH_DIRECTORY": os.path.expanduser("~/downloaded_files/.xlsx/")
-}
+
+class Config:
+    """
+    A class that handles the loading of configuration values from the environment.
+
+    Attributes:
+        data (Dict[str, Any]): A dictionary containing the loaded configuration values.
+    """
+
+    def __init__(self):
+        self.data: Dict[str, Any] = self._load_config()
+
+    def _load_config(self) -> Dict[str, Any]:
+        """
+        Load configuration values from the environment, or use default values if not found.
+
+        Returns:
+            Dict[str, Any]: A dictionary of loaded configuration values.
+        """
+        return {key: os.environ.get(key, default) for key, default in self.default_values().items()}
+
+    def get(self, key: str) -> Any:
+        """
+        Get a configuration value by its key.
+
+        Args:
+            key (str): The key for the desired configuration value.
+
+        Returns:
+            Any: The configuration value for the given key.
+        """
+        return self.data.get(key)
+
+    @staticmethod
+    def default_values() -> Dict[str, Any]:
+        """
+        Provide default configuration values.
+
+        Returns:
+            Dict[str, Any]: A dictionary of default configuration values.
+        """
+        return {
+            'mongo_uri': "mongodb://root:example@localhost:27017/admin",
+            'database_name': "recordsDB",
+            'collection_name': "xlsxData",
+            'max_retries': 3,
+            'num_processes': multiprocessing.cpu_count(),
+            'watch_directory': os.path.expanduser("~/downloaded_files/.xlsx/"),
+            'buffer_size': 4096,
+            'excel_header_rows': 5,
+        }
 
 
-def connect_to_mongodb():
-    return MongoClient(CONFIG["MONGO_URI"])
+class MongoDBHandler:
+    """
+    A class to handle operations related to MongoDB.
 
+    Attributes:
+        config (Config): An instance of the Config class to get configuration values.
+        _client (MongoClient): A MongoDB client instance.
+    """
 
-# Counts the number of Excel files in the directory.
-def count_xlsx_files(directory):
-    return len([f for f in os.listdir(directory) if f.endswith('.xlsx')])
+    def __init__(self, config: Config):
+        self.config: Config = config
+        self._client: MongoClient = MongoClient(self.config.get('mongo_uri'), serverSelectionTimeoutMS=5000)
+        self._check_mongo_availability()
 
+    def _check_mongo_availability(self) -> None:
+        """
+        Check if the MongoDB server is available. Raise an error if it's not.
 
-def get_scaled_threshold(file_count):
-    # The function `math.log1p(file_count)` calculates the natural logarithm of `1 + file_count`.
-    # This ensures a positive and progressively increasing value. As the dataset size (file_count)
-    # increases, the term `decay_factor / math.log1p(file_count)` reduces, making the threshold
-    # move closer to the base_threshold. This ensures that the threshold is always greater than
-    # the base_threshold.
-
-    base_threshold = 0.5
-    decay_factor = 0.1
-    return base_threshold + decay_factor / (1 + file_count)
-
-
-# Converts an Excel file to a list of dictionaries.
-def xlsx_to_json(file_path, schema):
-    with load_workbook(filename=file_path, read_only=True) as wb:
-        ws = wb.active
-        data = []
-
-        for row in ws.iter_rows(values_only=True):
-            filtered_row = {
-                ws.cell(row=1, column=idx + 1).value: cell for idx, cell in enumerate(row) if
-                ws.cell(row=1, column=idx + 1).value in schema and cell
-            }
-            if filtered_row:
-                data.append(filtered_row)
-    return data
-
-
-# Removes empty keys and values from the records.
-def sanitize_data(records):
-    return [{k: v for k, v in record.items() if k and v} for record in records]
-
-
-# Inserts records into MongoDB.
-def insert_into_database(records, file_path):
-    valid_records = [record for record in records if record and any(record.values())]
-    if not valid_records:
-        return
-    retries = 0
-    client = connect_to_mongodb()
-    collection = client[CONFIG["DATABASE_NAME"]][CONFIG["COLLECTION_NAME"]]
-    while retries < CONFIG["MAX_RETRIES"]:
+        Raises:
+            ConnectionError: If there's a failure in connecting to MongoDB.
+        """
         try:
-            collection.insert_many(valid_records)
-            break
-        except errors.ServerSelectionTimeoutError:
-            logger.error(f"Server selection timeout error when inserting into MongoDB for {file_path}. Retrying...")
-            retries += 1
-            time.sleep(3 * retries)  # Exponential back-off
-        except (errors.OperationFailure, Exception) as e:
-            logger.error(f"Error when inserting into MongoDB for {file_path}. Error: {str(e)}")
-            break
-    client.close()
+            self._client.server_info()
+        except mongo_errors.ServerSelectionTimeoutError:
+            raise ConnectionError("Cannot connect to MongoDB.")
 
+    def insert_records(self, records: Dict[str, Any], file_path: str, sheet_name: str) -> None:
+        """
+        Insert or update records into MongoDB.
 
-# Processes an Excel file.
-def process_xlsx(file_path):
-    try:
-        data = xlsx_to_json(file_path, CONFIG["SCHEMA"])
-        data = sanitize_data(data)
-        for i in range(0, len(data), CONFIG["CHUNK_SIZE"]):
-            insert_into_database(data[i:i + CONFIG["CHUNK_SIZE"]], file_path)
-        logger.info(f"Successfully processed {file_path}")
-    except Exception as e:
-        logger.error(f"Error processing {file_path}. Error: {str(e)}")
+        Args:
+            records (Dict[str, Any]): The records to insert/update.
+            file_path (str): The source file of the records.
+            sheet_name (str): The name of the Excel sheet containing the records.
+        """
+        db_collection = self._client[self.config.get('database_name')][self.config.get('collection_name')]
 
-
-# Determines the common schema for all Excel files in the directory.
-def determine_schema(directory):
-    header_counts = defaultdict(int)
-    files = [os.path.join(directory, f) for f in os.listdir(directory) if f.endswith('.xlsx')]
-    sampled_files = random.sample(files, min(CONFIG["SCHEMA_DETERMINATION_SAMPLE_SIZE"], len(files)))
-
-    for file_path in sampled_files:
-        logger.info(f"Processing: {file_path}")
-        wb = load_workbook(filename=file_path, read_only=True)
-        ws = wb.active
-        headers = [cell for cell in next(ws.iter_rows(values_only=True)) if cell]
-        for header in headers:
-            header_counts[header] += 1
-
-        wb.close()
-
-    total_files = len(files)
-    common_headers = [header for header, count in header_counts.items() if
-                      count / total_files >= CONFIG["SCHEMA_THRESHOLD"]]
-
-    return common_headers
-
-
-# Watchdog event handler to process files as they are added to the directory.
-class XLSXHandler(FileSystemEventHandler):
-    def __init__(self, process_delay=60):
-        super().__init__()
-        self.process_delay = process_delay
-        self.processing_files = set()
-        self.file_lock = multiprocessing.Lock()
-
-    def on_modified(self, event):
-        if event.is_directory or not event.src_path.endswith('.xlsx'):
+        if "metadata" not in records or "records" not in records:
+            logger.warning(f"Invalid records format in file {file_path}. Skipping insertion for sheet {sheet_name}.")
             return
 
-        with self.file_lock:
-            if event.src_path not in self.processing_files:
-                self.processing_files.add(event.src_path)
-                file_queue.put(event.src_path)
-                time.sleep(self.process_delay)
-                self.processing_files.remove(event.src_path)
-            else:
-                file_queue.put(event.src_path)
+        record_id = hashlib.md5(sheet_name.encode()).hexdigest()
+        db_collection.update_one({"_id": record_id}, {"$set": records}, upsert=True)
+
+        logger.info(f"Successfully inserted/updated records from {file_path} for sheet {sheet_name} into MongoDB.")
+
+    def _retry_insert(self, valid_records, file_path, db_collection):
+        for retry in range(self.config.get('max_retries')):
+            try:
+                db_collection.insert_many(valid_records)
+                logger.info(f"Successfully inserted {len(valid_records)} records from {file_path} into MongoDB.")
+                return
+            except (mongo_errors.ServerSelectionTimeoutError, mongo_errors.OperationFailure) as e:
+                self._handle_database_error(e, file_path, retry)
+            except Exception as e:
+                logger.error(f"Unexpected error inserting records from {file_path}: {e}")
+                break
+
+    @staticmethod
+    def _handle_database_error(error, file_path, retry_count):
+        if isinstance(error, (mongo_errors.ServerSelectionTimeoutError, mongo_errors.OperationFailure)):
+            time.sleep(3 * (retry_count + 1))
+            logger.warning(f"Database error for {file_path}. Retrying...")
 
 
-if __name__ == "__main__":
-    if not os.path.exists(CONFIG["WATCH_DIRECTORY"]):
-        logger.error(f"The directory {CONFIG['WATCH_DIRECTORY']} does not exist. Exiting program.")
+class XLSXProcessor:
+    """
+    A class to process and transform Excel files.
+
+    Attributes:
+        config (Config): An instance of the Config class to get configuration values.
+        mongo_handler (MongoDBHandler): An instance of the MongoDBHandler class to perform MongoDB operations.
+    """
+
+    def __init__(self, config: Config, mongo_handler: MongoDBHandler):
+        self.config: Config = config
+        self.mongo_handler: MongoDBHandler = mongo_handler
+
+    def process_file(self, file_path: str) -> None:
+        """
+        Process the Excel file and insert/update its records into MongoDB.
+
+        Args:
+            file_path (str): The path to the Excel file.
+        """
+        data = self._convert_excel_to_json(file_path)
+        for sheet_name, sheet_data in data.items():
+            self.mongo_handler.insert_records(sheet_data, file_path, sheet_name)
+
+    def _convert_excel_to_json(self, input_excel_path):
+        def make_unique_columns(cols):
+            seen = {}
+            for idx, col in enumerate(cols):
+                original_col = col
+                counter = 1
+                while col in seen:
+                    col = f"{original_col}_{counter}"
+                    counter += 1
+                seen[col] = True
+                cols[idx] = col
+            return cols
+
+        try:
+            # Read the entire excel without skipping headers
+            entire_workbook = pd.read_excel(input_excel_path, sheet_name=None, header=None, engine='openpyxl')
+
+            result_data = {}
+            for sheet_name, entire_data_frame in entire_workbook.items():
+                # Skip sheets with the name 'Contents'
+                if sheet_name == 'Contents':
+                    continue
+
+                # Extract metadata
+                metadata = {
+                    "header": entire_data_frame.iloc[0, 1],
+                    "metadata": entire_data_frame.iloc[1, 0],
+                    "table_info": entire_data_frame.iloc[2, 0],
+                    "copyright": entire_data_frame.iloc[-1, 0],
+                }
+
+                # Now read the actual data, skipping the first 4 rows for the data section
+                data_frame = entire_data_frame[4:].reset_index(drop=True)
+
+                # Convert column names to string representation
+                columns = data_frame.iloc[0].astype(str).tolist()
+
+                # Make the column names unique
+                unique_columns = make_unique_columns(columns)
+                data_frame.columns = unique_columns
+
+                # skip the first row as it contains column names, and the second as it contains redundant data
+                data_frame = data_frame[2:].reset_index(drop=True)  # Use the first data row as headers
+
+                records = self._data_frame_to_json(data_frame)
+
+                result_data[sheet_name] = {
+                    "metadata": metadata,
+                    "records": records
+                }
+
+            return result_data
+        except Exception as unexpected_reading_error:
+            logger.error(f"Unexpected error reading {input_excel_path}: {unexpected_reading_error}")
+            return {}
+
+    @staticmethod
+    def _data_frame_to_json(data_frame):
+        # Ensure there are at least two columns.
+        if len(data_frame.columns) < 2:
+            logger.warning("DataFrame has fewer than two columns. Unable to create key-value pairs.")
+            return data_frame.to_dict(orient='records')
+
+        # Extract the first two columns.
+        key_col = data_frame.columns[0]
+        value_col = data_frame.columns[1]
+
+        records = []
+        for _, row in data_frame.iterrows():
+            record = {}
+
+            # Add the key-value pair from the first two columns.
+            key_value = row[key_col]
+            value_value = row[value_col]
+            if pd.notna(key_value) and pd.notna(value_value):
+                record[str(key_value)] = value_value
+
+            # Add the remaining columns.
+            for col in data_frame.columns[2:]:
+                record[str(col)] = row[col] if pd.notna(row[col]) else ""
+
+            records.append(record)
+
+        return records
+
+    @staticmethod
+    def _filter_data(data_frame):
+        return data_frame[data_frame[data_frame.columns[0]].apply(
+            lambda x: isinstance(x, (int, float))) & data_frame[data_frame.columns[1]].notna()]
+
+
+class XLSXHandler(FileSystemEventHandler):
+    """
+    A class to handle file system events related to Excel files.
+
+    Attributes:
+        processor (XLSXProcessor): An instance of the XLSXProcessor class to process Excel files.
+        _file_lock (multiprocessing.Lock): A lock to handle concurrent file events.
+        _last_processed_times (Dict[str, float]): A dictionary to track the last processed time for each file.
+        queue (multiprocessing.Queue): A queue to add files for processing.
+    """
+
+    def __init__(self, queue: multiprocessing.Queue, processor: XLSXProcessor):
+        super().__init__()
+        self.processor: XLSXProcessor = processor
+        self._file_lock: multiprocessing.Lock = multiprocessing.Lock()
+        self._last_processed_times: Dict[str, float] = {}
+        self.queue: multiprocessing.Queue = queue
+
+    def on_modified(self, event):
+        if self._is_valid_event(event):
+            self.queue.put(event.src_path)
+
+    def _is_valid_event(self, event):
+        return (self._is_xlsx_file(event)
+                and self._can_process_file(event.src_path)
+                and self._is_file_stable(event.src_path))
+
+    @staticmethod
+    def _is_xlsx_file(event):
+        return not event.is_directory and event.src_path.endswith('.xlsx')
+
+    def _can_process_file(self, src_path):
+        current_time = time.time()
+        with self._file_lock:
+            last_processed_time = self._last_processed_times.get(src_path, 0)
+            if current_time - last_processed_time < 300:
+                return False
+            self._last_processed_times[src_path] = current_time
+            return True
+
+    def _is_file_stable(self, src_path, wait_time=5):
+        initial_hash = compute_sha256(src_path, self.processor.config)
+        time.sleep(wait_time)
+        return initial_hash == compute_sha256(src_path, self.processor.config)
+
+
+def compute_sha256(file_path, config):
+    sha256_hash = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        for byte_block in iter(lambda: f.read(config.get('buffer_size')), b""):
+            sha256_hash.update(byte_block)
+    return sha256_hash.hexdigest()
+
+
+def worker(queue, config):
+    mongo_handler = MongoDBHandler(config)
+    processor = XLSXProcessor(config, mongo_handler)
+    while True:
+        file_path = queue.get()
+        if file_path is None:
+            break
+        processor.process_file(file_path)
+
+
+def start_workers(queued_files, config):
+    return [multiprocessing.Process(target=worker, args=(queued_files, config)) for _ in
+            range(config.get('num_processes'))]
+
+
+def get_all_xlsx_files_in_directory(directory_path):
+    return [os.path.join(directory_path, file) for file in os.listdir(directory_path) if file.endswith('.xlsx')]
+
+
+def initialize_and_start_file_observer(watch_directory, queue, processor):
+    event_handler = XLSXHandler(queue, processor)
+    observer_instance = Observer()
+    observer_instance.schedule(event_handler, watch_directory, recursive=True)
+    observer_instance.start()
+    return observer_instance
+
+
+def check_dir_exists(dir_path):
+    if not os.path.exists(dir_path):
+        logger.error(f"The directory {dir_path} does not exist. Exiting program.")
         sys.exit(1)
 
-    file_count = count_xlsx_files(CONFIG["WATCH_DIRECTORY"])
-    CONFIG["SCHEMA_DETERMINATION_SAMPLE_SIZE"] = file_count
-    CONFIG["SCHEMA_THRESHOLD"] = get_scaled_threshold(file_count)
 
-    CONFIG["SCHEMA"] = determine_schema(CONFIG["WATCH_DIRECTORY"])
-    if not CONFIG["SCHEMA"]:
-        logger.error("No common schema determined. Exiting program.")
-        sys.exit(1)
+def starting_message(config):
+    logger.info("Press Ctrl+C to stop the program.")
+    logger.info(f"Watching directory: {config.get('watch_directory')}")
+    logger.info(f"Number of processes: {config.get('num_processes')}")
+    logger.info(f"MongoDB URI: {config.get('mongo_uri')}")
+    logger.info(f"MongoDB database name: {config.get('database_name')}")
+    logger.info(f"MongoDB collection name: {config.get('collection_name')}")
 
-    file_queue = multiprocessing.Queue()
-    pool = multiprocessing.Pool(processes=CONFIG["NUM_PROCESSES"])
-    for _ in range(CONFIG["NUM_PROCESSES"]):
-        pool.apply_async(worker, args=(file_queue, process_xlsx,))
 
-    existing_files = [os.path.join(CONFIG["WATCH_DIRECTORY"], f) for f in os.listdir(CONFIG["WATCH_DIRECTORY"]) if
-                      f.endswith('.xlsx')]
-    for f in existing_files:
-        file_queue.put(f)
-
-    event_handler = XLSXHandler(process_delay=60)
-    observer = Observer()
-    observer.schedule(event_handler, CONFIG["WATCH_DIRECTORY"], recursive=False)
-    observer.start()
-
+def handle_interrupt(config, process_pool, queue, observer_instance):
     try:
+        starting_message(config)
         while True:
-            time.sleep(10)
+            time.sleep(5)
     except KeyboardInterrupt:
-        for _ in range(CONFIG["NUM_PROCESSES"]):
-            file_queue.put("STOP")
-        observer.stop()
-        pool.close()
-        pool.join()
+        logger.info("KeyboardInterrupt detected. Waiting for ongoing tasks to complete before shutting down...")
+        for _ in range(config.get('num_processes')):
+            queue.put(None)
+        for proc in process_pool:
+            proc.join()
+        observer_instance.stop()
+    finally:
+        observer_instance.join()
 
-    observer.join()
+
+def start() -> None:
+    """
+    The main function to start the program. It initializes the necessary components, starts worker processes,
+    sets up a file observer, and handles interruptions gracefully.
+    """
+    configuration = Config()
+    mongo_handler = MongoDBHandler(configuration)
+    processor = XLSXProcessor(configuration, mongo_handler)
+    queued_files = multiprocessing.Queue()
+    check_dir_exists(configuration.get('watch_directory'))
+    for file_path in get_all_xlsx_files_in_directory(configuration.get('watch_directory')):
+        queued_files.put(file_path)
+    process_pool = start_workers(queued_files, configuration)
+    for proc in process_pool:
+        proc.start()
+    observer_instance = initialize_and_start_file_observer(configuration.get('watch_directory'), queued_files,
+                                                           processor)
+    handle_interrupt(configuration, process_pool, queued_files, observer_instance)
+
+
+if __name__ == '__main__':
+    start()
