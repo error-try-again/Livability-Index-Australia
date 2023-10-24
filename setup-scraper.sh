@@ -1,3 +1,67 @@
+#!/bin/bash
+set -e
+
+# Define the Python script filename
+PYTHON_SCRAPER_FILENAME="web_scraper.py"
+
+# Function to check if a command is available
+check_command() {
+    if ! command -v "$1" &> /dev/null; then
+        echo "Error: $1 is not installed or not available in PATH."
+        exit 1
+    fi
+}
+
+# Check if pip3 and python3 are installed and available
+check_command pip3
+check_command python3
+
+# Function to check and install required Python packages
+check_and_install_python_packages() {
+    installed_packages=$(pip3 freeze)
+    for package in "$@"; do
+        if echo "$installed_packages" | grep -q "^$package="; then
+            echo "$package is already installed."
+        else
+            echo "Installing Python package: $package"
+            pip3 install $package
+        fi
+    done
+}
+
+# Trap function to handle user interrupts
+handle_interrupt() {
+    echo -e "\nUser interrupt detected. Cleaning up..."
+    if [[ -f $PYTHON_SCRAPER_FILENAME ]]; then
+        rm $PYTHON_SCRAPER_FILENAME
+    fi
+    exit 1
+}
+
+# Set the trap for SIGINT
+trap handle_interrupt SIGINT
+
+# Function to create urls.json with a list of URLs
+create_urls_json() {
+    cat <<EOL > urls.json
+[
+    "https://www.abs.gov.au"
+]
+EOL
+}
+
+create_config_json() {
+  cat <<EOL > config.json
+  {
+    "excluded_directories": ["calendar", "homepage_release_calendar", "about", "contact", "privacy", "terms", "core", "section", "full", "profiles"],
+    "excluded_extensions": [".zip", ".pdf", ".doc", ".docx", ".ppt", ".pptx", ".png", ".jpg", ".jpeg", ".gif", ".csv", ".xml", ".json", ".txt"]
+  }
+EOL
+}
+
+# Function to write the Python scraper to a file
+write_python_scraper_to_file() {
+    cat <<EOL > $PYTHON_SCRAPER_FILENAME
 import hashlib
 import os
 import json
@@ -12,7 +76,7 @@ import datetime
 import tracemalloc
 import signal
 from collections import deque, OrderedDict
-from urllib.parse import urljoin, urlparse, urlunparse, unquote
+from urllib.parse import urljoin, urlparse, urlunparse
 from bs4 import BeautifulSoup
 from robotexclusionrulesparser import RobotExclusionRulesParser
 
@@ -43,9 +107,8 @@ memory_log.addHandler(memory_handler)
 
 def normalize_url(normalizable_url):
     """Normalize the given URL."""
-    decoded_url = unquote(normalizable_url)
     # Parse the URL
-    parsed = urlparse(decoded_url)
+    parsed = urlparse(normalizable_url)
     # Sort query parameters
     sorted_query = "&".join(sorted(parsed.query.split("&")))
     # Reconstruct the URL with sorted query parameters and return
@@ -87,18 +150,6 @@ class LRUCache:
         self.cache = OrderedDict()
         self.capacity = capacity
         self.lock = threading.Lock()  # Lock for thread safety
-
-    def __getitem__(self, key: str):
-        return self.get(key)
-
-    def __setitem__(self, key: str, value) -> None:
-        with self.lock:
-            if key in self.cache:
-                self.cache.move_to_end(key)
-            else:
-                if len(self.cache) >= self.capacity:
-                    self.cache.popitem(last=False)
-            self.cache[key] = value
 
     def get(self, key: str):
         with self.lock:
@@ -147,7 +198,7 @@ def verify_backup_state():
         with open(backup_filename, "r") as file:
             data = json.load(file)
 
-            required_keys = ["visited_links"]
+            required_keys = ["visited_links", "file_hashes"]
             for key in required_keys:
                 if key not in data:
                     logging.error(f"{backup_filename} is missing {key}!")
@@ -190,7 +241,6 @@ def is_url_allowed(queued_url):
         return False
 
     path = urlparse(queued_url).path.strip("/")
-
     if not path or path.startswith("statistics") or path.startswith("census"):
         return True
     else:
@@ -247,8 +297,7 @@ class WebScraper:
 
         # Add the starting URL
         for url in self.starting_urls:
-            decoded_url = unquote(url)  # Decode the URL
-            url_deque.append(decoded_url)
+            url_deque.append(url)
 
         # If resuming, load the saved state
         if self.resume:
@@ -331,6 +380,8 @@ class WebScraper:
                         continue
                     self.visited_links.set(url_hash)
 
+                self.file_hashes[url_hash] = queued_url
+
                 if not is_url_allowed(queued_url):
                     continue
 
@@ -384,6 +435,7 @@ class WebScraper:
                 with open(backup_filename, "w") as temp_state_file:
                     state = {
                         "visited_links": list(self.visited_links.cache.keys()),
+                        "file_hashes": self.file_hashes,
                         "pending_links": list(url_deque)  # Save the remaining URLs in the deque
                     }
                     json.dump(state, temp_state_file)
@@ -415,7 +467,11 @@ class WebScraper:
                     # Populate LRUCache for visited links
                     self.visited_links.bulk_add(state["visited_links"])
 
+                    # Populate file_hashes data structure
+                    self.file_hashes = state["file_hashes"]
+
                     logging.info(f"Loaded {len(state['visited_links'])} visited links from backup.")
+                    logging.info(f"Loaded {len(self.file_hashes)} file hashes from backup.")
 
                     # Load the pending URLs into a local list
                     pending_urls = state.get("pending_links", [])
@@ -451,8 +507,7 @@ class WebScraper:
             existing_hash = compute_file_hash(local_filename)
 
             # If the hash of the existing file matches the previously stored hash, skip the download
-            if (queued_url in self.visited_links
-                    and self.visited_links[queued_url] == existing_hash and not force_download):
+            if queued_url in self.file_hashes and self.file_hashes[queued_url] == existing_hash and not force_download:
                 logging.info(f"File {local_filename} already exists with matching hash. Skipping download.")
                 return
             elif not force_download:
@@ -467,6 +522,7 @@ class WebScraper:
                 else:
                     logging.info(f"File {local_filename} already exists. Skipping download.")
                     return
+
         # Continue with the download if above conditions are not met
         try:
             with requests.get(queued_url, stream=True) as response:
@@ -475,26 +531,17 @@ class WebScraper:
                 with open(local_filename, 'wb') as f:
                     for chunk in response.iter_content(chunk_size=8192):
                         f.write(chunk)
+                # Once the file is downloaded, compute its hash and store in the file_hashes dictionary
+                file_hash = compute_file_hash(local_filename)
+                self.file_hashes[queued_url] = file_hash
+
+                logging.info(f"Downloaded {queued_url} to {local_filename} with hash {file_hash}")
         except requests.RequestException as download_error:
             logging.error(f"Error downloading {queued_url}: {download_error}")
         except Exception as other_network_error:
             # Handle other potential errors during file download
             logging.error(f"Unexpected error during file download: {other_network_error}")
 
-
-def generate_filename_from_title(soup, url):
-    """Generate a filename based on the webpage title."""
-    # Get the page title from the soup object
-    title = soup.title.string if soup.title else "webpage"
-    # Keep only the first 50 characters of the title
-    shortened_title = "_".join(title.split()[:50])
-    # Get the last part of the URL to use as a base for the file name
-    base_name = os.path.basename(urlparse(url).path)
-    if not base_name:
-        base_name = "index"
-    # Create the file name using the title, base name and current date and time
-    filename = f"{shortened_title}_{base_name}_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}.html"
-    return filename
 
 def read_json_urls():
     try:
@@ -517,3 +564,28 @@ if __name__ == '__main__':
     web_scraper = WebScraper(USER_AGENT, starting_urls=url_list, resume=True, delay=2, jitter=0, download_folder="downloaded_files")
 
     web_scraper.start_scraper(NUM_THREADS)
+
+EOL
+      echo "Python scraper written to $PYTHON_SCRAPER_FILENAME"
+}
+
+# Create urls.json with a list of URLs
+create_urls_json
+
+# Create config.json with a list of URLs
+create_config_json
+
+# Check and install required packages
+check_and_install_python_packages requests beautifulsoup4 robotexclusionrulesparser lxml pandas openpyxl matplotlib watchdog pymongo xlrd
+
+
+# Write the Python scraper script
+write_python_scraper_to_file
+
+# Execute the Python scraper
+python3 $PYTHON_SCRAPER_FILENAME
+
+# Remove the temporary Python script after execution
+rm $PYTHON_SCRAPER_FILENAME
+
+echo "Done!"
