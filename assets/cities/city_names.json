@@ -1,0 +1,11 @@
+{
+  "locations": [
+    { "name": "Brisbane", "country": "AU" },
+    { "name": "Canberra", "country": "AU" },
+    { "name": "Townsville", "country": "AU" },
+    { "name": "Sydney", "country": "AU" },
+    { "name": "Melbourne", "country": "AU" },
+    { "name": "Perth", "country": "AU" },
+    { "name": "Adelaide", "country": "AU" }
+  ]
+}

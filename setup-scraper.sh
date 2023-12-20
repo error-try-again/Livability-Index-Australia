@@ -578,7 +578,6 @@ create_config_json
 # Check and install required packages
 check_and_install_python_packages requests beautifulsoup4 robotexclusionrulesparser lxml pandas openpyxl matplotlib watchdog pymongo xlrd
 
-
 # Write the Python scraper script
 write_python_scraper_to_file
 

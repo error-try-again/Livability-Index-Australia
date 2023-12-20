@@ -134,8 +134,8 @@ def print_logs(num_lines=5):
 def compute_md5(filename):
     """Compute the MD5 hash of a file."""
     hash_md5 = hashlib.md5()
-    with open(filename, "rb") as f:
-        for chunk in iter(lambda: f.read(4096), b""):
+    with open(filename, "rb") as compute_file:
+        for chunk in iter(lambda: compute_file.read(4096), b""):
             hash_md5.update(chunk)
     return hash_md5.hexdigest()
 
@@ -177,11 +177,11 @@ class WebScraper:
 
     def backup_state(self):
         """Backup the current state to a file."""
-        with open("backup_state.json", "w") as f:
+        with open("backup_state.json", "w") as backup_file:
             state = {
                 "visited_links": list(self.visited_links),
             }
-            json.dump(state, f)
+            json.dump(state, backup_file)
 
     def load_state(self):
         """Load the state from a backup file."""
@@ -202,7 +202,8 @@ class WebScraper:
         # Convert estimated time from seconds to a more readable format
         estimated_time_str = str(datetime.timedelta(seconds=int(estimated_remaining_time)))
 
-        return f"Crawled {self.pages_crawled} out of an estimated {total_links} pages. Estimated time remaining: {estimated_time_str}."
+        return (f"Crawled {self.pages_crawled} out of an estimated {total_links} pages."
+                f" Estimated time remaining: {estimated_time_str}.")
 
     # Fetch data from a given URL and handle rate limits and retries with exponential backoff
     def fetch_data_from_url(self, url, retries=3, backoff_in_seconds=10):
@@ -232,12 +233,12 @@ class WebScraper:
 
             logging.debug(f"Finished request for URL: {url}")
             return response.text
-        except requests.RequestException as e:
+        except requests.RequestException as request_exception:
             if retries > 0:
                 logging.warning(f"Error fetching data from {url}. Retrying... Remaining retries: {retries - 1}")
                 time.sleep(backoff_in_seconds)
                 return self.fetch_data_from_url(url, retries - 1)
-            logging.error(f"Error fetching data from {url}: {e}")
+            logging.error(f"Error fetching data from {url}: {request_exception}")
             return ""
 
     def extract_xlsx_links(self, html_content, base_url):
@@ -266,15 +267,15 @@ class WebScraper:
         try:
             with requests.get(url, stream=True) as response:
                 response.raise_for_status()
-                with open(local_filename, 'wb') as f:
+                with open(local_filename, 'wb') as save_file:
                     for chunk in response.iter_content(chunk_size=8192):
-                        f.write(chunk)
+                        save_file.write(chunk)
             logging.info(f"Downloaded {url} to {local_filename}")
-        except requests.RequestException as e:
-            logging.error(f"Error downloading {url}: {e}")
-        except Exception as e:
+        except requests.RequestException as request_exception:
+            logging.error(f"Error downloading {url}: {request_exception}")
+        except Exception as request_exception:
             # Handle other potential errors during file download
-            logging.error(f"Unexpected error during file download: {e}")
+            logging.error(f"Unexpected error during file download: {request_exception}")
 
     def crawl_sublinks(self, start_url, domain, excluded_directories, excluded_extensions):
         # Initialize the start time if it hasn't been set
@@ -305,8 +306,8 @@ class WebScraper:
 
             try:
                 soup = BeautifulSoup(html_content, 'lxml')
-            except Exception as e:
-                logging.error(f"Error parsing content from {url}: {e}")
+            except Exception as parse_exception:
+                logging.error(f"Error parsing content from {url}: {parse_exception}")
                 continue
 
             for a in soup.find_all('a', href=True):
@@ -384,7 +385,8 @@ class WebScraper:
 
 
 if __name__ == "__main__":
-    DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    DEFAULT_USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
     USER_AGENT = DEFAULT_USER_AGENT
     NUM_THREADS = int(os.cpu_count() * 0.10)  # Use 10% of the available CPU cores for the scraper
     logging.info(f"Using User-Agent: {USER_AGENT}")

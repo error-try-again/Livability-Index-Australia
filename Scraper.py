@@ -126,6 +126,7 @@ class LRUCache:
             return key in self.cache
 
 
+# Log memory usage every 10 seconds to memory_profiler.log
 def log_memory_profiling():
     """Capture and log memory usage."""
     snapshot = tracemalloc.take_snapshot()
@@ -135,8 +136,8 @@ def log_memory_profiling():
     tracemalloc.stop()
 
 
+# Verify the integrity of the backup state file.
 def verify_backup_state():
-    """Verify the integrity of the backup state file."""
     backup_filename = "backup_state.json"
 
     if not os.path.exists(backup_filename):
@@ -153,10 +154,12 @@ def verify_backup_state():
                     logging.error(f"{backup_filename} is missing {key}!")
                     return False
                 if not data[key] or not isinstance(data[key], list):
-                    logging.error(f"{key} in backup_state.json is empty or not a list!")
+                    logging.error(f"{key} in backup_state.json is empty or "
+                                  f"not a list!")
                     return False
                 if len(data[key]) != len(set(data[key])):
-                    logging.error(f"{key} in backup_state.json contains duplicate entries!")
+                    logging.error(f"{key} in backup_state.json contains "
+                                  f"duplicate entries!")
                     return False
 
     except json.JSONDecodeError:
@@ -169,6 +172,7 @@ def verify_backup_state():
     return True
 
 
+# Compute the SHA-256 hash of a file.
 def compute_file_hash(file_path):
     """Compute the SHA-256 hash of a file."""
     hash_sha256 = hashlib.sha256()
@@ -178,13 +182,14 @@ def compute_file_hash(file_path):
     return hash_sha256.hexdigest()
 
 
+# Compute the SHA-256 hash of a URL.
 def compute_url_hash(url):
     """Compute the SHA-256 hash of a URL string."""
     return hashlib.sha256(url.encode()).hexdigest()
 
 
+# Check if the URL is allowed based on certain conditions.
 def is_url_allowed(queued_url):
-    """Check if the URL is allowed based on certain conditions."""
     file_extension = os.path.splitext(urlparse(queued_url).path)[1]
     if file_extension in config['excluded_extensions']:
         return False
@@ -201,24 +206,31 @@ def is_url_allowed(queued_url):
 class WebScraper:
     # Constructor method to initialize scraper object attributes
     def __init__(self, user_agent, starting_urls=None, resume=False, delay=None, jitter=None, download_folder=None):
-        # Initialize instance attributes with default values or based on the arguments provided
+        # Initialize instance attributes with default values or based on the
+        # arguments provided
         self.USER_AGENT = user_agent  # User agent to use for requests
-        self.session = requests.Session()  # Requests session to manage web requests
+        self.session = requests.Session()  # Requests session to manage web
+        # requests
         self.DELAY = delay  # Delay between requests
-        self.DOWNLOAD_FOLDER = "downloaded_files"  # Folder to store downloaded files
+        self.DOWNLOAD_FOLDER = "downloaded_files"  # Folder to store
+        # downloaded files
         self.visited_domains = set()  # Domains that have been visited
-        self.robots_parser = RobotExclusionRulesParser()  # Parser for robots.txt
+        self.robots_parser = RobotExclusionRulesParser()  # Parser for
+        # robots.txt
         self.start_time = None  # Timestamp when scraping started
         self.pages_crawled = 0  # Count of pages successfully scraped
-        self.lock = threading.Lock()  # Lock for synchronizing threaded operations
+        self.lock = threading.Lock()  # Lock for synchronizing threaded
+        # operations
         self.stop_signal_received = False  # Flag to check if the scraper needs to be stopped
-        self.resume = resume  # Flag to check if the scraper should resume from a saved state
+        self.resume = resume  # Flag to check if the scraper should resume
+        # from a saved state
         self.JITTER = jitter  # Jitter to add to the delay between requests
         self.starting_urls = starting_urls or []  # URLs to start scraping from
         self.file_hashes = {}  # Hashes of files downloaded, to avoid re-downloads
         self.threads = []  # List to keep track of threads
         self.visited_links = LRUCache(100000)  # Cache to store visited URLs
-        self.robots_parsers = {}  # Cache to store robots.txt parsers for domains
+        self.robots_parsers = {}  # Cache to store robots.txt parsers for
+        # domains
         self.sleep_lock = threading.Lock()  # Lock for sleeping threads
 
         self.session.headers.update({"User-Agent": self.USER_AGENT})
@@ -238,7 +250,8 @@ class WebScraper:
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
 
-    # Initializes the scraping process and starts multiple threads to scrape the URLs
+    # Initializes the scraping process and starts multiple threads to scrape
+    # the URLs
     def start_scraper(self, num_threads):
 
         tracemalloc.start()
@@ -263,7 +276,8 @@ class WebScraper:
                 continue
             new_urls.append(normalized_url)
 
-        # Add the new URLs to the deque outside the loop to avoid mutating the deque while iterating over it
+        # Add the new URLs to the deque outside the loop to avoid mutating
+        # the deque while iterating over it
         url_deque.extend(new_urls)
 
         try:
@@ -495,6 +509,7 @@ def generate_filename_from_title(soup, url):
     # Create the file name using the title, base name and current date and time
     filename = f"{shortened_title}_{base_name}_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}.html"
     return filename
+
 
 def read_json_urls():
     try:
