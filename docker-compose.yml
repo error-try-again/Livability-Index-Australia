@@ -1,0 +1,32 @@
+version: '3.8'
+services:
+  mongo:
+    build:
+      context: ./mongodb
+      dockerfile: Dockerfile
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb-data:/data/db
+      - ./assets/cities:/data/db/assets/cities
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=root
+      - MONGO_INITDB_ROOT_PASSWORD=example
+      - MONGO_INITDB_DATABASE=recordsDB
+
+  apollo:
+    build:
+      context: ./apollo
+      dockerfile: Dockerfile
+    volumes:
+      - ./apollo:/usr/app
+    ports:
+      - "4000:4000"
+    depends_on:
+      - mongo
+    environment:
+      - MONGO_URI=mongodb://root:example@mongo:27017/recordsDB?authSource=admin
+
+volumes:
+  mongodb-data:
+  apollo-server:
