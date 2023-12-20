@@ -5,16 +5,10 @@ FROM node:20.7.0
 WORKDIR /usr/app
 
 # Copy the package.json file and other necessary files
-COPY package*.json tsconfig.json .env ./
-COPY index.ts ./src/index.ts
+COPY package*.json tsconfig.json .env .eslintrc.cjs ./
+COPY src ./src
 
-RUN npm init --yes && npm pkg set type="module"
-
-# Install dependencies
-RUN npm install typescript @apollo/server graphql graphql-tag mongodb dotenv joi ts-node-dev nodemon
-
-RUN npm install -D @types/graphql @types/node
-
+RUN npm install
 # Expose the port the app runs on
 EXPOSE 4000
 

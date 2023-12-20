@@ -3,13 +3,29 @@
     "esm": true
   },
   "compilerOptions": {
-    "rootDirs": ["src"],
+    "rootDirs": [
+      "src"
+    ],
     "outDir": "dist",
-    "lib": ["es2020"],
+    "lib": [
+      "es2020"
+    ],
     "module": "ESNext",
     "target": "ESNext",
     "moduleResolution": "node",
+    "types": [
+      "node"
+    ],
     "esModuleInterop": true,
-    "types": ["node"]
+    "strict": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmitOnError": true,
+    "forceConsistentCasingInFileNames": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true
   }
 }

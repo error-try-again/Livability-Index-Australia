@@ -95,8 +95,8 @@ version: '3.8'
 services:
   mongo:
     build:
-      context: ./mongodb
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./docker/mongodb/Dockerfile
     ports:
       - "27017:27017"
     volumes:
@@ -110,7 +110,7 @@ services:
   apollo:
     build:
       context: ./apollo
-      dockerfile: Dockerfile
+      dockerfile: ./docker/Dockerfile
     volumes:
       - ./apollo:/usr/app
     ports:
