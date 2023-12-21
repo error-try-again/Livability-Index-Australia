@@ -54,6 +54,7 @@ const weatherTypeDefinitions = gql`
       speed: Float!
       deg: Int!
   }
+  
   type Query {
       getAllCities: [String!]!
 
